@@ -124,6 +124,24 @@ func loadConfig() error {
 	return nil
 }
 
+// shouldIncrementBasedOnMidnight determines if enough time has passed since the
+// last update to increment the parentheses count. It checks if the current time
+// has passed midnight in the specified timezone since the last update.
+func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Location) bool {
+	// Convert last update to configured timezone
+	lastUpdatedInTZ := lastUpdated.In(tz)
+	
+	// Calculate the next midnight after last update
+	nextMidnight := time.Date(
+		lastUpdatedInTZ.Year(), lastUpdatedInTZ.Month(), lastUpdatedInTZ.Day()+1,
+		0, 0, 0, 0, tz,
+	)
+	
+	// Check if current time has passed that midnight
+	nowInTZ := now.In(tz)
+	return nowInTZ.After(nextMidnight) || nowInTZ.Equal(nextMidnight)
+}
+
 // Get all active tasks from Todoist API
 // Check if a task is recurring based on its due date or labels
 func isRecurringTask(task Task) bool {
@@ -343,8 +361,8 @@ func buildTaskMap(tasks []Task) {
 
 // Extract parentheses count from task content
 func extractParenthesesCount(content string) (int, string, bool) {
-	// Regex to find pattern like "50)" or "50)))" etc.
-	regex := regexp.MustCompile(`^(\d+)(\)+)(.*)$`)
+	// Regex to find pattern like "50)" or ")" or "))" etc.
+	regex := regexp.MustCompile(`^(\d*)(\)+)(.*)$`)
 	matches := regex.FindStringSubmatch(content)
 
 	if len(matches) != 4 {
@@ -400,12 +418,12 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 
 // Update task content with new parentheses count
 func updateContentWithParentheses(baseContent string, count int) string {
-	// Find the first number in the content
-	regex := regexp.MustCompile(`^(\d+)(.*)$`)
+	// Find the optional number in the content
+	regex := regexp.MustCompile(`^(\d*)(.*)$`)
 	matches := regex.FindStringSubmatch(baseContent)
 
 	if len(matches) != 3 {
-		// If no number found, just return the original content
+		// If regex fails, just return the original content
 		return baseContent
 	}
 
@@ -514,18 +532,8 @@ func processTask(task Task) error {
 	// For increments (non-resets), apply the midnight alignment rule
 	lastUpdated := parseMetadata(task.Description)
 	if !lastUpdated.IsZero() {
-		// Convert last update to configured timezone
-		lastUpdatedInTZ := lastUpdated.In(timezone)
-		
-		// Calculate the next midnight after last update
-		nextMidnight := time.Date(
-			lastUpdatedInTZ.Year(), lastUpdatedInTZ.Month(), lastUpdatedInTZ.Day()+1,
-			0, 0, 0, 0, timezone,
-		)
-		
-		// Check if current time has passed that midnight
-		now := time.Now().In(timezone)
-		if now.Before(nextMidnight) {
+		now := time.Now()
+		if !shouldIncrementBasedOnMidnight(lastUpdated, now, timezone) {
 			logger.Printf("Skipping increment for task %s (midnight in configured timezone not reached)", task.ID)
 			return nil
 		}
