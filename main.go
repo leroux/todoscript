@@ -42,6 +42,7 @@ var (
 	verbose       bool
 	recentTaskMap map[string][]Task
 	logger        *log.Logger
+	timezone      *time.Location
 )
 
 // Main function
@@ -106,6 +107,19 @@ func loadConfig() error {
 	// Parse verbose flag
 	verboseStr := os.Getenv("VERBOSE")
 	verbose, _ = strconv.ParseBool(verboseStr) // Defaults to false if not provided
+
+	// Set timezone
+	tzName := os.Getenv("TIMEZONE")
+	if tzName == "" {
+		tzName = "UTC" // Default to UTC if not specified
+	}
+
+	var tzErr error
+	timezone, tzErr = time.LoadLocation(tzName)
+	if tzErr != nil {
+		logger.Printf("Warning: Invalid timezone %s, defaulting to UTC: %v", tzName, tzErr)
+		timezone = time.UTC
+	}
 
 	return nil
 }
@@ -482,7 +496,7 @@ func processTask(task Task) error {
 	if shouldReset {
 		// Reset to a single parenthesis for completed recurring tasks
 		newContent := updateContentWithParentheses(baseContent, 1)
-		now := time.Now()
+		now := time.Now().In(timezone)
 		newDescription := updateDescriptionWithMetadata(task.Description, now)
 		
 		logger.Printf("Resetting task %s from %d parentheses to 1.", task.ID, count)
@@ -497,11 +511,24 @@ func processTask(task Task) error {
 		return updateTask(task.ID, newContent, newDescription)
 	}
 	
-	// For increments (non-resets), apply the 24-hour rule
+	// For increments (non-resets), apply the midnight alignment rule
 	lastUpdated := parseMetadata(task.Description)
-	if !lastUpdated.IsZero() && time.Since(lastUpdated) < 24*time.Hour {
-		logger.Printf("Skipping increment for task %s (last updated < 24h ago)", task.ID)
-		return nil
+	if !lastUpdated.IsZero() {
+		// Convert last update to configured timezone
+		lastUpdatedInTZ := lastUpdated.In(timezone)
+		
+		// Calculate the next midnight after last update
+		nextMidnight := time.Date(
+			lastUpdatedInTZ.Year(), lastUpdatedInTZ.Month(), lastUpdatedInTZ.Day()+1,
+			0, 0, 0, 0, timezone,
+		)
+		
+		// Check if current time has passed that midnight
+		now := time.Now().In(timezone)
+		if now.Before(nextMidnight) {
+			logger.Printf("Skipping increment for task %s (midnight in configured timezone not reached)", task.ID)
+			return nil
+		}
 	}
 	
 	// If we reach here, we need to increment the parentheses count
@@ -517,8 +544,8 @@ func processTask(task Task) error {
 	// Update the task content with the new parentheses count
 	newContent := updateContentWithParentheses(baseContent, newCount)
 	
-	// Update metadata
-	now := time.Now()
+	// Update metadata with current time in the configured timezone
+	now := time.Now().In(timezone)
 	newDescription := updateDescriptionWithMetadata(task.Description, now)
 	
 	if dryRun {

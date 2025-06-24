@@ -41,8 +41,8 @@ Let's follow a daily recurring task "50) Meditate" that was created on Monday:
 4. Update metadata with each automation run
 
 ### Task Processing Rules
-1. Skip processing tasks already updated in the last 24 hours
-2. For both recurring and non-recurring tasks: Increment parentheses daily (when not updated in last 24 hours) to track staleness
+1. Skip processing tasks until midnight has passed in the configured timezone since last update
+2. For both recurring and non-recurring tasks: Increment parentheses daily (when midnight has passed since last update) to track staleness
 3. Reset to a single parenthesis ONLY when the task is completed by the user
 4. This applies the same staleness tracking to all @auto tasks
 
@@ -50,6 +50,7 @@ Let's follow a daily recurring task "50) Meditate" that was created on Monday:
 1. Support a dry-run mode to preview changes without modifying tasks
 2. Support a verbose mode for detailed logging
 3. Configuration via environment variables (.env file)
+4. Support timezone configuration for midnight alignment
 
 
 ## Data Models
