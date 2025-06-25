@@ -499,21 +499,23 @@ func processTask(task Task) error {
 	
 	// For recurring tasks, first check if they've been completed recently
 	var shouldReset bool = false
+	var newParenCount int = 1
 	if isRecurring {
 		// Check completion status from activity log
 		daysSinceCompletion := getDaysSinceCompletion(task.ID)
 		if daysSinceCompletion >= 0 {
 			// Task was completed recently, should reset
 			shouldReset = true
-			logger.Printf("Task %s was completed %d days ago, will reset parentheses count.", 
-				task.ID, daysSinceCompletion)
+			newParenCount = daysSinceCompletion + 1
+			logger.Printf("Task %s was completed %d days ago, will reset parentheses count to %d.", 
+				task.ID, daysSinceCompletion, newParenCount)
 		}
 	}
 
 	// Always reset if necessary, regardless of last update time
 	if shouldReset {
-		// Reset to a single parenthesis for completed recurring tasks
-		newContent := updateContentWithParentheses(baseContent, 1)
+		// Reset to number of days since completion + 1 for completed recurring tasks
+		newContent := updateContentWithParentheses(baseContent, newParenCount)
 		now := time.Now().In(timezone)
 		newDescription := updateDescriptionWithMetadata(task.Description, now)
 		
