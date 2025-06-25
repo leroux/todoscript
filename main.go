@@ -516,10 +516,17 @@ func processTask(task Task) error {
 	if shouldReset {
 		// Reset to number of days since completion + 1 for completed recurring tasks
 		newContent := updateContentWithParentheses(baseContent, newParenCount)
+		
+		// Check if the content actually changed
+		if newContent == task.Content {
+			logger.Printf("No change needed for task %s, skipping update", task.ID)
+			return nil
+		}
+		
 		now := time.Now().In(timezone)
 		newDescription := updateDescriptionWithMetadata(task.Description, now)
 		
-		logger.Printf("Resetting task %s from %d parentheses to 1.", task.ID, count)
+		logger.Printf("Resetting task %s: setting parentheses count to %d", task.ID, newParenCount)
 		
 		if dryRun {
 			logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
@@ -553,6 +560,12 @@ func processTask(task Task) error {
 	
 	// Update the task content with the new parentheses count
 	newContent := updateContentWithParentheses(baseContent, newCount)
+	
+	// Check if the content actually changed
+	if newContent == task.Content {
+		logger.Printf("No change needed for task %s, skipping update", task.ID)
+		return nil
+	}
 	
 	// Update metadata with current time in the configured timezone
 	now := time.Now().In(timezone)
