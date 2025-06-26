@@ -1,0 +1,2 @@
+todoscript: *.go
+	go build
