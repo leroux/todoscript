@@ -4,10 +4,12 @@ A Go-based automation platform for Todoist that currently implements task stalen
 
 ## Overview
 
-Todoscript is a flexible platform for automating Todoist tasks. The current implementation focuses on managing tasks tagged with `@auto`, but the architecture is designed to support multiple automation features in the future.
+Todoscript is a flexible platform for automating Todoist tasks. It implements task staleness tracking by incrementing parentheses in task names daily and resetting the counter when recurring tasks are completed.
 
-### Current Feature: Task Staleness Tracking
-The initial implementation tracks task staleness by incrementing parentheses in task names daily and resetting the counter when recurring tasks are completed.
+### Task Selection for Staleness Tracking
+By default, all tasks are processed for staleness.
+- To exclude a task, add the label `@no-autoage`.
+- If you prefer an opt-in system, set the `AUTOAGE_BY_DEFAULT` environment variable to `false`. In this mode, only tasks with the `@autoage` label will be processed.
 
 ## Features
 
@@ -55,6 +57,10 @@ DRY_RUN=false
 # Set to true for verbose logging
 VERBOSE=true
 
+# Set to true to process all tasks by default (tasks can be excluded with @no-autoage).
+# Set to false to only process tasks with the @autoage label. Defaults to false if not set.
+AUTOAGE_BY_DEFAULT=true
+
 # Log file path (optional, logs to stdout if not specified)
 LOG_FILE=
 ```
@@ -79,9 +85,11 @@ DRY_RUN=true VERBOSE=true ./todoscript
 
 ### Staleness Tracking
 
-1. **Task Selection**: The script processes tasks tagged with `@auto`.
+1. **Task Selection**:
+    - If `AUTOAGE_BY_DEFAULT` is `true` (or not set), the script processes all tasks *except* those tagged with `@no-autoage`.
+    - If `AUTOAGE_BY_DEFAULT` is `false`, the script processes *only* tasks tagged with `@autoage`.
 2. **Parentheses Tracking**: Tasks following the pattern `<number>)<text>` get an additional parenthesis daily to track staleness.
-3. **Recurring Tasks**: For recurring tasks (identified by `Due.Recurring = true`), the parentheses count resets to 1 when the task is completed.
+3. **Recurring Tasks**: For recurring tasks (identified by `Due.Recurring = true`), the parentheses count resets to a number based on days since completion when the task is completed.
 4. **Completion Detection**: The script uses the Todoist Activity Log to detect when recurring tasks were last completed.
 5. **Metadata**: The script stores metadata in the task description to track when the task was last updated.
 
@@ -96,12 +104,19 @@ Todoscript is built with extensibility in mind:
 
 ## Example
 
-If you have a task "10) Write blog post" with the `@auto` tag:
+Consider a task "10) Write blog post".
 
-- Day 1: "10) Write blog post"
-- Day 2: "10)) Write blog post" (one more parenthesis)
-- Day 3: "10))) Write blog post" (one more parenthesis)
-- After you complete the task (if recurring): "10) Write blog post" (reset to one parenthesis)
+**Scenario 1: `AUTOAGE_BY_DEFAULT=true` (or not set)**
+- If the task has no specific label, it will be processed:
+    - Day 1: "10) Write blog post"
+    - Day 2: "10)) Write blog post"
+    - Day 3: "10))) Write blog post"
+    - After completion (if recurring): "10) Write blog post" (or similar, based on days since completion)
+- If the task has the `@no-autoage` label, it will be skipped.
+
+**Scenario 2: `AUTOAGE_BY_DEFAULT=false`**
+- If the task has the `@autoage` label, it will be processed as above.
+- If the task does not have the `@autoage` label, it will be skipped.
 
 ## Makefile Commands
 

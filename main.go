@@ -38,11 +38,12 @@ var (
 	apiToken      string
 	apiURL        string = "https://api.todoist.com/rest/v2"
 	activityURL   string = "https://api.todoist.com/sync/v9/activity/get"
-	dryRun        bool
-	verbose       bool
-	recentTaskMap map[string][]Task
-	logger        *log.Logger
-	timezone      *time.Location
+	dryRun           bool
+	verbose          bool
+	autoAgeByDefault bool // New global variable
+	recentTaskMap    map[string][]Task
+	logger           *log.Logger
+	timezone         *time.Location
 )
 
 // Main function
@@ -107,6 +108,10 @@ func loadConfig() error {
 	// Parse verbose flag
 	verboseStr := os.Getenv("VERBOSE")
 	verbose, _ = strconv.ParseBool(verboseStr) // Defaults to false if not provided
+
+	// Parse auto age by default flag
+	autoAgeByDefaultStr := os.Getenv("AUTOAGE_BY_DEFAULT")
+	autoAgeByDefault, _ = strconv.ParseBool(autoAgeByDefaultStr) // Defaults to false if not provided
 
 	// Set timezone
 	tzName := os.Getenv("TIMEZONE")
@@ -306,16 +311,16 @@ func processAllTasks() error {
 		return err
 	}
 
-	// Filter tasks with @auto label
-	autoTasks := filterAutoTasks(allTasks)
+	// Filter tasks based on rules
+	tasksToProcess := filterTasksForProcessing(allTasks)
 
-	logger.Printf("Found %d tasks with @auto tag", len(autoTasks))
+	logger.Printf("Found %d tasks to process", len(tasksToProcess))
 
 	// Build task map for completion detection
-	buildTaskMap(autoTasks)
+	buildTaskMap(tasksToProcess)
 
-	// Process each auto-labeled task
-	for _, task := range autoTasks {
+	// Process each selected task
+	for _, task := range tasksToProcess {
 		if err := processTask(task); err != nil {
 			logger.Printf("Error processing task %s: %v", task.ID, err)
 		}
@@ -324,25 +329,37 @@ func processAllTasks() error {
 	return nil
 }
 
-// Check if a task has the @auto label
-func hasAutoLabel(task Task) bool {
+// shouldProcessTask determines if a task should be processed based on its labels and AUTOAGE_BY_DEFAULT.
+func shouldProcessTask(task Task) bool {
+	hasNoAutoAgeLabel := false
+	hasAutoAgeLabel := false
+
 	for _, label := range task.Labels {
-		if label == "auto" {
-			return true
+		if label == "no-autoage" {
+			hasNoAutoAgeLabel = true
+		}
+		if label == "autoage" {
+			hasAutoAgeLabel = true
 		}
 	}
-	return false
+
+	if autoAgeByDefault {
+		// If auto-aging is default, process unless explicitly opted out with @no-autoage
+		return !hasNoAutoAgeLabel
+	}
+	// If auto-aging is not default, process only if explicitly opted in with @autoage
+	return hasAutoAgeLabel
 }
 
-// Filter tasks to only those with @auto tag
-func filterAutoTasks(tasks []Task) []Task {
-	var autoTasks []Task
+// filterTasksForProcessing filters tasks based on the new rules.
+func filterTasksForProcessing(tasks []Task) []Task {
+	var tasksToProcess []Task
 	for _, task := range tasks {
-		if hasAutoLabel(task) {
-			autoTasks = append(autoTasks, task)
+		if shouldProcessTask(task) {
+			tasksToProcess = append(tasksToProcess, task)
 		}
 	}
-	return autoTasks
+	return tasksToProcess
 }
 
 // Build map of tasks by base content for completion detection
