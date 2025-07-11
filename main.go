@@ -1,3 +1,18 @@
+// Package main implements todoscript - a Todoist task aging automation tool.
+//
+// This tool automatically increments visual "age markers" (parentheses) on Todoist tasks
+// to help track how long tasks have been sitting in your todo list. The concept is simple:
+// tasks get more parentheses the longer they remain incomplete, creating visual pressure
+// to either complete them or remove them.
+//
+// How it works:
+// - Tasks with pattern "2) Do something" become "2)) Do something" after midnight
+// - Recurring tasks reset their age when completed: "5))))) Task" → "3))) Task" 
+// - Tasks can opt-in with @autoage label or opt-out with @no-autoage label
+// - Dry-run mode available for testing changes before applying them
+//
+// The aging concept creates a visual indication of task staleness, encouraging you to
+// either complete long-standing tasks or remove them from your list entirely.
 package main
 
 import (
@@ -87,9 +102,14 @@ var (
 	recentTaskMap    map[string][]Task
 	logger           *log.Logger
 	timezone         *time.Location
-	// Pre-compiled regex patterns
-	parenthesesRegex = regexp.MustCompile(`^(\d*)(\)+)(.*)$`)
-	metadataRegex    = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
+	// Pre-compiled regex patterns for task aging
+	// taskAgePattern matches tasks with age markers: "3))) Do something"
+	// Groups: (1) optional number, (2) parentheses markers, (3) remaining content
+	taskAgePattern = regexp.MustCompile(`^(\d*)(\)+)(.*)$`)
+	
+	// metadataPattern matches our auto-generated metadata in task descriptions
+	// Matches: "[auto: lastUpdated=2023-12-25T10:30:00Z]"
+	metadataPattern = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
 	// Shared HTTP client for better performance
 	httpClient = &http.Client{
 		Timeout: time.Second * httpTimeoutSeconds,
@@ -209,6 +229,9 @@ func loadConfig() error {
 // shouldIncrementBasedOnMidnight determines if enough time has passed since the
 // last update to increment the parentheses count. It checks if the current time
 // has passed midnight in the specified timezone since the last update.
+//
+// This implements the core aging rule: tasks age once per day at midnight.
+// This prevents tasks from aging multiple times if the script runs multiple times per day.
 func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Location) bool {
 	// Convert last update to configured timezone
 	lastUpdatedInTZ := lastUpdated.In(tz)
@@ -307,7 +330,12 @@ func isRecurringTask(task Task) bool {
 	return false
 }
 
-// Get days since the task was last completed using the Activity Log API
+// getDaysSinceCompletion calculates how many days have passed since a recurring task
+// was last completed. This is used to reset the age markers for recurring tasks.
+//
+// For recurring tasks, instead of continuing to age indefinitely, we reset their
+// age markers based on how many days have passed since completion. This provides
+// a fresh start while still indicating how long it's been since the last completion.
 func getDaysSinceCompletion(taskID string) int {
 	// Default to -1 if we can't determine the completion date
 	if dryRun {
@@ -453,7 +481,7 @@ func filterTasksForProcessing(tasks []Task) []Task {
 
 func buildTaskMap(tasks []Task) {
 	for _, task := range tasks {
-		_, baseContent, found := extractParenthesesCount(task.Content)
+		_, baseContent, found := parseTaskAgeMarkers(task.Content)
 		if !found {
 			continue
 		}
@@ -468,9 +496,12 @@ func buildTaskMap(tasks []Task) {
 // PARSER/UTILITY FUNCTIONS
 // ============================================================================
 
-func extractParenthesesCount(content string) (int, string, bool) {
+// parseTaskAgeMarkers extracts the age count from a task's parentheses markers.
+// Returns: (ageCount, baseContent, hasAgeMarkers)
+// Example: "3))) Do something" → (3, "3 Do something", true)
+func parseTaskAgeMarkers(content string) (int, string, bool) {
 	// Use pre-compiled regex pattern
-	matches := parenthesesRegex.FindStringSubmatch(content)
+	matches := taskAgePattern.FindStringSubmatch(content)
 
 	if len(matches) != 4 {
 		return 0, content, false
@@ -492,7 +523,7 @@ func parseMetadata(description string) time.Time {
 	var lastUpdated time.Time
 
 	// Use pre-compiled regex pattern
-	matches := metadataRegex.FindStringSubmatch(description)
+	matches := metadataPattern.FindStringSubmatch(description)
 
 	if len(matches) == 2 {
 		// Parse last updated timestamp
@@ -510,8 +541,8 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 	metadataStr := fmt.Sprintf("[auto: lastUpdated=%s]", lastUpdated.Format(time.RFC3339))
 
 	// If existing metadata found, replace it
-	if metadataRegex.MatchString(description) {
-		return metadataRegex.ReplaceAllString(description, metadataStr)
+	if metadataPattern.MatchString(description) {
+		return metadataPattern.ReplaceAllString(description, metadataStr)
 	}
 
 	// Otherwise, append metadata to description
@@ -522,7 +553,9 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 }
 
 // Update task content with new parentheses count
-func updateContentWithParentheses(baseContent string, count int) string {
+// addAgeMarkersToContent adds the specified number of parentheses age markers to task content.
+// Example: addAgeMarkersToContent("3 Do something", 4) → "3)))) Do something"
+func addAgeMarkersToContent(baseContent string, count int) string {
 	// Find the optional number in the content
 	regex := regexp.MustCompile(`^(\d*)(.*)$`)
 	matches := regex.FindStringSubmatch(baseContent)
@@ -542,7 +575,9 @@ func updateContentWithParentheses(baseContent string, count int) string {
 }
 
 // Determine what action to take on a task based on its state
-func determineTaskAction(currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
+// decideUpdateAction determines what action to take on a task based on its current state.
+// Returns: (action, newAgeCount) where action is "reset", "skip", or "increment"
+func decideUpdateAction(currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
 	// Check for reset conditions first
 	if isRecurring && daysSinceCompletion >= 0 {
 		return actionReset, daysSinceCompletion + 1
@@ -561,9 +596,11 @@ func determineTaskAction(currentCount int, isRecurring bool, daysSinceCompletion
 }
 
 // Process task logic without side effects - returns new content, description, and whether to update
-func processTaskLogic(task Task, isRecurring bool, daysSinceCompletion int, timezone *time.Location) (newContent string, newDescription string, shouldUpdate bool) {
+// calculateTaskUpdate determines the new content and description for a task based on aging rules.
+// Returns: (newContent, newDescription, shouldUpdate)
+func calculateTaskUpdate(task Task, isRecurring bool, daysSinceCompletion int, timezone *time.Location) (newContent string, newDescription string, shouldUpdate bool) {
 	// Extract current parentheses count
-	count, baseContent, found := extractParenthesesCount(task.Content)
+	count, baseContent, found := parseTaskAgeMarkers(task.Content)
 	if !found {
 		return task.Content, task.Description, false
 	}
@@ -572,14 +609,14 @@ func processTaskLogic(task Task, isRecurring bool, daysSinceCompletion int, time
 	lastUpdated := parseMetadata(task.Description)
 
 	// Determine what action to take
-	action, newCount := determineTaskAction(count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
+	action, newCount := decideUpdateAction(count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
 
 	if action == actionSkip {
 		return task.Content, task.Description, false
 	}
 
 	// Calculate new content and description
-	newContent = updateContentWithParentheses(baseContent, newCount)
+	newContent = addAgeMarkersToContent(baseContent, newCount)
 
 	// Only update if content actually changed
 	if newContent == task.Content {
@@ -595,7 +632,7 @@ func processTaskLogic(task Task, isRecurring bool, daysSinceCompletion int, time
 
 func processTask(task Task) error {
 	// Check if task has parentheses pattern
-	_, _, found := extractParenthesesCount(task.Content)
+	_, _, found := parseTaskAgeMarkers(task.Content)
 	if !found {
 		logger.Printf("Skipping task %s (no parentheses pattern found)", task.ID)
 		return nil
@@ -615,7 +652,7 @@ func processTask(task Task) error {
 	}
 
 	// Use pure function to determine what to do
-	newContent, newDescription, shouldUpdate := processTaskLogic(task, isRecurring, daysSinceCompletion, timezone)
+	newContent, newDescription, shouldUpdate := calculateTaskUpdate(task, isRecurring, daysSinceCompletion, timezone)
 
 	if !shouldUpdate {
 		logger.Printf("No change needed for task %s, skipping update", task.ID)
