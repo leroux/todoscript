@@ -111,6 +111,23 @@ type UpdateAction struct {
 	NewCount int    // New age count after action
 }
 
+// TaskContext contains all the information needed to process a task
+type TaskContext struct {
+	Task                 Task
+	IsRecurring          bool
+	DaysSinceCompletion  int
+	Timezone             *time.Location
+}
+
+// ActivityResponse represents the response from Todoist's activity API
+type ActivityResponse struct {
+	Count  int `json:"count"`
+	Events []struct {
+		EventType string    `json:"event_type"`
+		EventDate time.Time `json:"event_date"`
+	} `json:"events"`
+}
+
 // Global variables
 var (
 	apiToken         string
@@ -227,15 +244,15 @@ func loadConfig() error {
 	}
 
 	// Set timezone
-	tzName := os.Getenv(envTimezone)
-	if tzName == "" {
-		tzName = defaultTimezone // Default to UTC if not specified
+	timezoneName := os.Getenv(envTimezone)
+	if timezoneName == "" {
+		timezoneName = defaultTimezone // Default to UTC if not specified
 	}
 
-	var tzErr error
-	timezone, tzErr = time.LoadLocation(tzName)
-	if tzErr != nil {
-		logger.Printf("Warning: Invalid timezone '%s', defaulting to UTC: %v", tzName, tzErr)
+	var timezoneErr error
+	timezone, timezoneErr = time.LoadLocation(timezoneName)
+	if timezoneErr != nil {
+		logger.Printf("Warning: Invalid timezone '%s', defaulting to UTC: %v", timezoneName, timezoneErr)
 		timezone = time.UTC
 	}
 
@@ -334,6 +351,7 @@ func postTodoistData(url string, payload any) error {
 // TODOIST API FUNCTIONS
 // ============================================================================
 
+// isRecurringTask checks if a task is marked as recurring through labels or due date settings.
 func isRecurringTask(task Task) bool {
 	// Check if the task has the 'recurring' label
 	for _, label := range task.Labels {
@@ -367,13 +385,6 @@ func getDaysSinceCompletion(taskID string) int {
 	url := fmt.Sprintf("%s?object_type=item&object_id=%s&event_type=completed&limit=1", activityURL, taskID)
 
 	// Parse the activity log response
-	type ActivityResponse struct {
-		Count  int `json:"count"`
-		Events []struct {
-			EventType string    `json:"event_type"`
-			EventDate time.Time `json:"event_date"`
-		} `json:"events"`
-	}
 
 	var activities ActivityResponse
 	if err := getTodoistData(url, &activities); err != nil {
@@ -396,6 +407,7 @@ func getDaysSinceCompletion(taskID string) int {
 	return daysSince
 }
 
+// getActiveTasks retrieves all active tasks from the Todoist API.
 func getActiveTasks() ([]Task, error) {
 	var tasks []Task
 	if err := getTodoistData(apiURL+"/tasks", &tasks); err != nil {
@@ -405,7 +417,7 @@ func getActiveTasks() ([]Task, error) {
 	return tasks, nil
 }
 
-// Update a task in Todoist
+// updateTask updates a task's content and description in Todoist.
 func updateTask(taskID, content, description string) error {
 	data := map[string]string{
 		jsonFieldContent:     content,
@@ -468,6 +480,7 @@ func processAllTasks() error {
 	return nil
 }
 
+// shouldProcessTask determines if a task should be processed based on auto-aging labels.
 func shouldProcessTask(task Task) bool {
 	hasNoAutoAgeLabel := false
 	hasAutoAgeLabel := false
@@ -489,6 +502,7 @@ func shouldProcessTask(task Task) bool {
 	return hasAutoAgeLabel
 }
 
+// filterTasksForProcessing filters tasks to only include those marked for auto-aging.
 func filterTasksForProcessing(tasks []Task) []Task {
 	var tasksToProcess []Task
 	for _, task := range tasks {
@@ -499,6 +513,7 @@ func filterTasksForProcessing(tasks []Task) []Task {
 	return tasksToProcess
 }
 
+// buildTaskMap creates a map of task content to tasks for duplicate detection.
 func buildTaskMap(tasks []Task) {
 	for _, task := range tasks {
 		ageInfo := parseTaskAgeMarkers(task.Content)
@@ -530,22 +545,25 @@ func parseTaskAgeMarkers(content string) TaskAgeInfo {
 		}
 	}
 
-	// Extract components
-	number := matches[1]
-	parentheses := matches[2]
-	remainingContent := matches[3]
+	// Extract components from regex groups
+	// Group 1: optional number prefix (e.g., "3" in "3))) task")
+	// Group 2: parentheses markers (e.g., ")))" in "3))) task")
+	// Group 3: remaining content (e.g., " task" in "3))) task")
+	numberPrefix := matches[1]
+	ageMarkers := matches[2]
+	taskContent := matches[3]
 
-	count := len(parentheses)
-	contentWithoutAge := number + remainingContent
+	ageCount := len(ageMarkers)
+	contentWithoutAge := numberPrefix + taskContent
 
 	return TaskAgeInfo{
-		AgeCount:         count,
+		AgeCount:         ageCount,
 		ContentWithoutAge: contentWithoutAge,
 		HasAgeMarkers:    true,
 	}
 }
 
-// Parse metadata from task description
+// parseMetadata extracts the last updated timestamp from task description metadata.
 func parseMetadata(description string) time.Time {
 	var lastUpdated time.Time
 
@@ -553,8 +571,9 @@ func parseMetadata(description string) time.Time {
 	matches := metadataPattern.FindStringSubmatch(description)
 
 	if len(matches) == 2 {
-		// Parse last updated timestamp
-		parsed, err := time.Parse(time.RFC3339, matches[1])
+		// Group 1 contains the timestamp string
+		timestampStr := matches[1]
+		parsed, err := time.Parse(time.RFC3339, timestampStr)
 		if err == nil {
 			lastUpdated = parsed
 		}
@@ -563,7 +582,7 @@ func parseMetadata(description string) time.Time {
 	return lastUpdated
 }
 
-// Update description with new metadata
+// updateDescriptionWithMetadata adds or updates the metadata timestamp in a task description.
 func updateDescriptionWithMetadata(description string, lastUpdated time.Time) string {
 	metadataStr := fmt.Sprintf("[auto: lastUpdated=%s]", lastUpdated.Format(time.RFC3339))
 
@@ -592,29 +611,32 @@ func addAgeMarkersToContent(contentWithoutAge string, count int) string {
 		return contentWithoutAge
 	}
 
-	number := matches[1]
+	// Extract components from simple regex: "^(\d*)(.*)$"
+	// Group 1: optional number prefix (e.g., "3" in "3 Do something")
+	// Group 2: remaining content (e.g., " Do something")
+	numberPrefix := matches[1]
 	remainingContent := matches[2]
 
 	// Create string with the specified number of parentheses
-	parentheses := strings.Repeat(")", count)
+	ageMarkers := strings.Repeat(")", count)
 
-	return number + parentheses + remainingContent
+	return numberPrefix + ageMarkers + remainingContent
 }
 
 // decideUpdateAction determines what action to take on a task based on its current state.
-func decideUpdateAction(currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) UpdateAction {
+func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time) UpdateAction {
 	// Check for reset conditions first
-	if isRecurring && daysSinceCompletion >= 0 {
+	if ctx.IsRecurring && ctx.DaysSinceCompletion >= 0 {
 		return UpdateAction{
 			Action:   actionReset,
-			NewCount: daysSinceCompletion + 1,
+			NewCount: ctx.DaysSinceCompletion + 1,
 		}
 	}
 
 	// Check if increment is needed based on midnight rule
 	if !lastUpdated.IsZero() {
 		now := time.Now()
-		if !shouldIncrementBasedOnMidnight(lastUpdated, now, timezone) {
+		if !shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
 			return UpdateAction{
 				Action:   actionSkip,
 				NewCount: currentCount,
@@ -630,27 +652,27 @@ func decideUpdateAction(currentCount int, isRecurring bool, daysSinceCompletion 
 }
 
 // calculateTaskUpdate determines the new content and description for a task based on aging rules.
-func calculateTaskUpdate(task Task, isRecurring bool, daysSinceCompletion int, timezone *time.Location) TaskUpdateInfo {
+func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	// Extract current parentheses count
-	ageInfo := parseTaskAgeMarkers(task.Content)
+	ageInfo := parseTaskAgeMarkers(ctx.Task.Content)
 	if !ageInfo.HasAgeMarkers {
 		return TaskUpdateInfo{
-			NewContent:     task.Content,
-			NewDescription: task.Description,
+			NewContent:     ctx.Task.Content,
+			NewDescription: ctx.Task.Description,
 			ShouldUpdate:   false,
 		}
 	}
 
 	// Parse existing metadata
-	lastUpdated := parseMetadata(task.Description)
+	lastUpdated := parseMetadata(ctx.Task.Description)
 
 	// Determine what action to take
-	updateAction := decideUpdateAction(ageInfo.AgeCount, isRecurring, daysSinceCompletion, lastUpdated, timezone)
+	updateAction := decideUpdateAction(ageInfo.AgeCount, ctx, lastUpdated)
 
 	if updateAction.Action == actionSkip {
 		return TaskUpdateInfo{
-			NewContent:     task.Content,
-			NewDescription: task.Description,
+			NewContent:     ctx.Task.Content,
+			NewDescription: ctx.Task.Description,
 			ShouldUpdate:   false,
 		}
 	}
@@ -659,17 +681,17 @@ func calculateTaskUpdate(task Task, isRecurring bool, daysSinceCompletion int, t
 	newContent := addAgeMarkersToContent(ageInfo.ContentWithoutAge, updateAction.NewCount)
 
 	// Only update if content actually changed
-	if newContent == task.Content {
+	if newContent == ctx.Task.Content {
 		return TaskUpdateInfo{
-			NewContent:     task.Content,
-			NewDescription: task.Description,
+			NewContent:     ctx.Task.Content,
+			NewDescription: ctx.Task.Description,
 			ShouldUpdate:   false,
 		}
 	}
 
 	// Update metadata with current time
-	now := time.Now().In(timezone)
-	newDescription := updateDescriptionWithMetadata(task.Description, now)
+	now := time.Now().In(ctx.Timezone)
+	newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
 
 	return TaskUpdateInfo{
 		NewContent:     newContent,
@@ -678,6 +700,7 @@ func calculateTaskUpdate(task Task, isRecurring bool, daysSinceCompletion int, t
 	}
 }
 
+// processTask processes a single task for aging and updates it if needed.
 func processTask(task Task) error {
 	// Check if task has parentheses pattern
 	ageInfo := parseTaskAgeMarkers(task.Content)
@@ -700,7 +723,13 @@ func processTask(task Task) error {
 	}
 
 	// Use pure function to determine what to do
-	updateInfo := calculateTaskUpdate(task, isRecurring, daysSinceCompletion, timezone)
+	ctx := TaskContext{
+		Task:                task,
+		IsRecurring:         isRecurring,
+		DaysSinceCompletion: daysSinceCompletion,
+		Timezone:            timezone,
+	}
+	updateInfo := calculateTaskUpdate(ctx)
 
 	if !updateInfo.ShouldUpdate {
 		logger.Printf("No change needed for task %s, skipping update", task.ID)
