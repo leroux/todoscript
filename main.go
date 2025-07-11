@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,7 +19,7 @@ import (
 // Constants
 const (
 	// HTTP client configuration
-	httpTimeoutSeconds      = 30
+	httpTimeoutSeconds     = 30
 	maxIdleConnections     = 10
 	maxIdleConnsPerHost    = 2
 	idleConnTimeoutSeconds = 90
@@ -224,6 +225,69 @@ func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Locatio
 }
 
 // ============================================================================
+// HTTP HELPER FUNCTIONS
+// ============================================================================
+
+// makeAuthenticatedRequest handles common HTTP request setup with authentication
+func makeAuthenticatedRequest(method, url string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("create request failed: %w", err)
+	}
+
+	req.Header.Add("Authorization", "Bearer "+apiToken)
+	if body != nil {
+		req.Header.Add("Content-Type", "application/json")
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send request failed: %w", err)
+	}
+
+	return resp, nil
+}
+
+// getTodoistData handles GET requests with JSON decoding
+func getTodoistData(url string, target interface{}) error {
+	resp, err := makeAuthenticatedRequest(httpMethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("decode response failed: %w", err)
+	}
+
+	return nil
+}
+
+// postTodoistData handles POST requests with JSON payload
+func postTodoistData(url string, payload interface{}) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal request data failed: %w", err)
+	}
+
+	resp, err := makeAuthenticatedRequest(httpMethodPost, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	return nil
+}
+
+// ============================================================================
 // TODOIST API FUNCTIONS
 // ============================================================================
 
@@ -254,26 +318,6 @@ func getDaysSinceCompletion(taskID string) int {
 	// Create the URL with query parameters for the activity log request
 	url := fmt.Sprintf("%s?object_type=item&object_id=%s&event_type=completed&limit=1", activityURL, taskID)
 
-	req, err := http.NewRequest(httpMethodGet, url, nil)
-	if err != nil {
-		logger.Printf("Failed to create activity log request for task %s: %v", taskID, err)
-		return -1
-	}
-
-	req.Header.Add("Authorization", "Bearer "+apiToken)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		logger.Printf("Failed to fetch activity log for task %s: %v", taskID, err)
-		return -1
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Printf("Failed to get activity log for task %s: API returned status %d: %s", taskID, resp.StatusCode, resp.Status)
-		return -1
-	}
-
 	// Parse the activity log response
 	type ActivityResponse struct {
 		Count  int `json:"count"`
@@ -284,8 +328,8 @@ func getDaysSinceCompletion(taskID string) int {
 	}
 
 	var activities ActivityResponse
-	if err := json.NewDecoder(resp.Body).Decode(&activities); err != nil {
-		logger.Printf("Failed to decode activity log response for task %s: %v", taskID, err)
+	if err := getTodoistData(url, &activities); err != nil {
+		logger.Printf("Failed to fetch activity log for task %s: %v", taskID, err)
 		return -1
 	}
 
@@ -305,26 +349,9 @@ func getDaysSinceCompletion(taskID string) int {
 }
 
 func getActiveTasks() ([]Task, error) {
-	req, err := http.NewRequest(httpMethodGet, apiURL+"/tasks", nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
-	}
-
-	req.Header.Add("Authorization", "Bearer "+apiToken)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch tasks failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, resp.Status)
-	}
-
 	var tasks []Task
-	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		return nil, fmt.Errorf("decode tasks failed: %w", err)
+	if err := getTodoistData(apiURL+"/tasks", &tasks); err != nil {
+		return nil, fmt.Errorf("get tasks failed: %w", err)
 	}
 
 	return tasks, nil
@@ -337,27 +364,9 @@ func updateTask(taskID, content, description string) error {
 		jsonFieldDescription: description,
 	}
 
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("marshal update data failed: %w", err)
-	}
-
-	req, err := http.NewRequest(httpMethodPost, fmt.Sprintf("%s/tasks/%s", apiURL, taskID), bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("create update request failed: %w", err)
-	}
-
-	req.Header.Add("Authorization", "Bearer "+apiToken)
-	req.Header.Add("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("send update request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("update task failed: API returned status %d: %s", resp.StatusCode, resp.Status)
+	url := fmt.Sprintf("%s/tasks/%s", apiURL, taskID)
+	if err := postTodoistData(url, data); err != nil {
+		return fmt.Errorf("update task failed: %w", err)
 	}
 
 	return nil
@@ -532,9 +541,8 @@ func updateContentWithParentheses(baseContent string, count int) string {
 	return number + parentheses + remainingContent
 }
 
-
 // Determine what action to take on a task based on its state
-func determineTaskAction(task Task, currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
+func determineTaskAction(currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
 	// Check for reset conditions first
 	if isRecurring && daysSinceCompletion >= 0 {
 		return actionReset, daysSinceCompletion + 1
@@ -564,7 +572,7 @@ func processTaskLogic(task Task, isRecurring bool, daysSinceCompletion int, time
 	lastUpdated := parseMetadata(task.Description)
 
 	// Determine what action to take
-	action, newCount := determineTaskAction(task, count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
+	action, newCount := determineTaskAction(count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
 
 	if action == actionSkip {
 		return task.Content, task.Description, false
