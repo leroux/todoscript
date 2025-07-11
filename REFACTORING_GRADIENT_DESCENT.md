@@ -9,47 +9,26 @@ A practical approach to continuously improve code quality through small, measura
 - **Iterative**: Stop when improvements become marginal
 - **Human-Controlled**: You approve every change
 
-## Quality Metrics (For This Project)
+## Quality Assessment Framework
 
-### Primary Focus
-1. **Error Handling Consistency** (Priority: 10/10)
-   - All API calls have proper error handling
-   - Consistent error message formats
-   - Graceful degradation patterns
+### High-Impact Areas (Address First)
+- [ ] Error handling follows consistent patterns
+- [ ] Functions have clear, single purposes
+- [ ] Code is logically organized and grouped
+- [ ] No obvious duplication without good reason
+- [ ] Complex logic is properly documented
 
-2. **Function Clarity** (Priority: 7/10)
-   - Each function has a clear, single purpose
-   - Reasonable complexity (not over-optimized)
-   - Good function names
+### Assessment Questions
+1. **Can a new developer understand this code quickly?**
+2. **Are error messages helpful for debugging?**
+3. **Would changing one thing require changes in multiple places?**
+4. **Is the code's intent clear from reading it?**
+5. **Are there any "WTF" moments when reading?**
 
-3. **Code Organization** (Priority: 6/10)
-   - Related functions grouped together
-   - Logical code flow
-   - Consistent patterns
-
-### Secondary Focus
-4. **Reduce Duplication** (Priority: 5/10)
-   - Only extract when it actually improves clarity
-   - Don't force abstractions
-
-5. **Documentation** (Priority: 4/10)
-   - Clear function comments for complex logic
-   - Self-documenting code preferred
-
-## Current Baseline (main.go - 651 lines)
-
-### Measured Issues
-- **HTTP operations**: Scattered across 4+ functions
-- **Error patterns**: 3 different error handling styles
-- **Magic strings**: ~8 hardcoded URLs/strings
-- **Complex functions**: 2-3 functions over 50 lines
-- **Regex operations**: 2 global vars, used in 3 places
-
-### Opportunities (Ranked by Impact)
-1. **Standardize error handling** → Improve reliability
-2. **Extract constants** → Reduce magic strings
-3. **Group HTTP operations** → Improve maintainability
-4. **Simplify complex functions** → Improve readability
+### Stopping Criteria
+- All high-impact checklist items completed
+- No obvious improvements that would significantly help maintenance
+- Diminishing returns on time invested
 
 ## Improvement Process
 
@@ -64,24 +43,71 @@ A practical approach to continuously improve code quality through small, measura
 - You can reject any proposal
 
 ### Stopping Criteria
-- No obvious improvements left
-- Diminishing returns on changes
-- You're satisfied with the current state
+- All high-impact checklist items completed
+- No obvious improvements that would significantly help maintenance
+- Diminishing returns on time invested
+
+## Common Refactoring Patterns
+
+### Error Handling Standardization
+- **Target**: Inconsistent error messages and patterns
+- **Action**: Standardize format and improve consistency
+- **Example**: `"failed to X: %w"` → `"X failed: %w"`
+
+### Constants Extraction
+- **Target**: Magic numbers and hardcoded strings
+- **Action**: Extract into named constants with clear organization
+- **Example**: Replace `30` with `httpTimeoutSeconds = 30`
+
+### HTTP Operations Consolidation
+- **Target**: Duplicate HTTP request/response handling
+- **Action**: Create helper functions for common patterns
+- **Example**: `makeAuthenticatedRequest()`, `getTodoistData()`
+
+### Function Naming & Documentation
+- **Target**: Unclear function names and missing documentation
+- **Action**: Rename for clarity and add comprehensive comments
+- **Example**: `extractParenthesesCount` → `parseTaskAgeMarkers`
+
+### Variable Naming Clarity
+- **Target**: Confusing or cryptic variable names
+- **Action**: Use self-documenting names
+- **Example**: `recentTaskMap` → `tasksByContent`
+
+### Return Value Simplification
+- **Target**: Complex multi-return functions
+- **Action**: Create clear struct-based returns
+- **Example**: `(int, string, bool)` → `TaskAgeInfo{...}`
+
+### Parameter Simplification
+- **Target**: Long parameter lists
+- **Action**: Group related parameters into context structs
+- **Example**: `TaskContext{Task, IsRecurring, DaysSinceCompletion, Timezone}`
+
+## Quality Improvement Areas
+
+### Code Structure
+- **Error Handling**: Uniform patterns and helpful messages
+- **Function Design**: Clear, single-purpose functions with good names
+- **Code Organization**: Logical grouping and flow
+- **Duplication**: DRY principle without over-abstraction
+
+### Readability
+- **Variable Naming**: Self-documenting names
+- **Function Documentation**: Clear purpose and usage
+- **Return Values**: Structured, meaningful returns
+- **Function Signatures**: Manageable parameter lists
 
 ## Ready to Start?
 
-### Project Context Confirmed
-- **Tool**: Go CLI for Todoist API
-- **Constraint**: Keep everything in main.go
-- **Priority**: Reliability and maintainability over perfection
+### Prerequisites
+- Identify target codebase for improvement
+- Establish quality priorities for the specific project
+- Set up git repository for tracking changes
+- Define stopping criteria based on project needs
 
-### Next Step
-**Iteration 1**: Standardize error handling patterns
-
-Claude will:
-1. Analyze current error handling inconsistencies
-2. Propose a standard pattern
-3. Show you exactly what changes
-4. Wait for your approval
-
-Would you like to proceed with **Iteration 1**?
+### Next Steps
+1. Analyze current codebase for improvement opportunities
+2. Rank opportunities by impact and effort
+3. Begin iterative improvement cycle
+4. Continue until convergence criteria met
