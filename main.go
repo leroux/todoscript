@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,15 +34,27 @@ type DueDate struct {
 
 // Global variables
 var (
-	apiToken      string
-	apiURL        string = "https://api.todoist.com/rest/v2"
-	activityURL   string = "https://api.todoist.com/sync/v9/activity/get"
+	apiToken         string
+	apiURL           string = "https://api.todoist.com/rest/v2"
+	activityURL      string = "https://api.todoist.com/sync/v9/activity/get"
 	dryRun           bool
 	verbose          bool
-	autoAgeByDefault bool // New global variable
+	autoAgeByDefault bool
 	recentTaskMap    map[string][]Task
 	logger           *log.Logger
 	timezone         *time.Location
+	// Pre-compiled regex patterns
+	parenthesesRegex = regexp.MustCompile(`^(\d*)(\)+)(.*)$`)
+	metadataRegex    = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
+	// Shared HTTP client for better performance
+	httpClient = &http.Client{
+		Timeout: time.Second * 30,
+		Transport: &http.Transport{
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 )
 
 // Main function
@@ -98,20 +109,38 @@ func loadConfig() error {
 	// Get API token
 	apiToken = os.Getenv("TODOIST_TOKEN")
 	if apiToken == "" {
-		return errors.New("missing required environment variable: TODOIST_TOKEN")
+		return fmt.Errorf("missing required environment variable: TODOIST_TOKEN")
 	}
 
 	// Parse dry run flag
 	dryRunStr := os.Getenv("DRY_RUN")
-	dryRun, _ = strconv.ParseBool(dryRunStr) // Defaults to false if not provided
+	if dryRunStr != "" {
+		dryRun, err = strconv.ParseBool(dryRunStr)
+		if err != nil {
+			logger.Printf("Warning: Invalid DRY_RUN value '%s', defaulting to false: %v", dryRunStr, err)
+			dryRun = false
+		}
+	}
 
 	// Parse verbose flag
 	verboseStr := os.Getenv("VERBOSE")
-	verbose, _ = strconv.ParseBool(verboseStr) // Defaults to false if not provided
+	if verboseStr != "" {
+		verbose, err = strconv.ParseBool(verboseStr)
+		if err != nil {
+			logger.Printf("Warning: Invalid VERBOSE value '%s', defaulting to false: %v", verboseStr, err)
+			verbose = false
+		}
+	}
 
 	// Parse auto age by default flag
 	autoAgeByDefaultStr := os.Getenv("AUTOAGE_BY_DEFAULT")
-	autoAgeByDefault, _ = strconv.ParseBool(autoAgeByDefaultStr) // Defaults to false if not provided
+	if autoAgeByDefaultStr != "" {
+		autoAgeByDefault, err = strconv.ParseBool(autoAgeByDefaultStr)
+		if err != nil {
+			logger.Printf("Warning: Invalid AUTOAGE_BY_DEFAULT value '%s', defaulting to false: %v", autoAgeByDefaultStr, err)
+			autoAgeByDefault = false
+		}
+	}
 
 	// Set timezone
 	tzName := os.Getenv("TIMEZONE")
@@ -122,12 +151,16 @@ func loadConfig() error {
 	var tzErr error
 	timezone, tzErr = time.LoadLocation(tzName)
 	if tzErr != nil {
-		logger.Printf("Warning: Invalid timezone %s, defaulting to UTC: %v", tzName, tzErr)
+		logger.Printf("Warning: Invalid timezone '%s', defaulting to UTC: %v", tzName, tzErr)
 		timezone = time.UTC
 	}
 
 	return nil
 }
+
+// ============================================================================
+// CONFIGURATION FUNCTIONS
+// ============================================================================
 
 // shouldIncrementBasedOnMidnight determines if enough time has passed since the
 // last update to increment the parentheses count. It checks if the current time
@@ -135,20 +168,22 @@ func loadConfig() error {
 func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Location) bool {
 	// Convert last update to configured timezone
 	lastUpdatedInTZ := lastUpdated.In(tz)
-	
+
 	// Calculate the next midnight after last update
 	nextMidnight := time.Date(
 		lastUpdatedInTZ.Year(), lastUpdatedInTZ.Month(), lastUpdatedInTZ.Day()+1,
 		0, 0, 0, 0, tz,
 	)
-	
+
 	// Check if current time has passed that midnight
 	nowInTZ := now.In(tz)
 	return nowInTZ.After(nextMidnight) || nowInTZ.Equal(nextMidnight)
 }
 
-// Get all active tasks from Todoist API
-// Check if a task is recurring based on its due date or labels
+// ============================================================================
+// TODOIST API FUNCTIONS
+// ============================================================================
+
 func isRecurringTask(task Task) bool {
 	// Check if the task has the 'recurring' label
 	for _, label := range task.Labels {
@@ -178,37 +213,33 @@ func getDaysSinceCompletion(taskID string) int {
 		logger.Printf("[DRY RUN] Would check activity log for task %s", taskID)
 		return -1
 	}
-	
-	client := &http.Client{
-		Timeout: time.Second * 30,
-	}
 
 	// Create the URL with query parameters for the activity log request
 	url := fmt.Sprintf("%s?object_type=item&object_id=%s&event_type=completed&limit=1", activityURL, taskID)
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		logger.Printf("Error creating activity log request: %v", err)
+		logger.Printf("Error creating activity log request for task %s: %v", taskID, err)
 		return -1
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiToken)
-	
-	resp, err := client.Do(req)
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		logger.Printf("Error fetching activity log: %v", err)
+		logger.Printf("Error fetching activity log for task %s: %v", taskID, err)
 		return -1
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		logger.Printf("Failed to get activity log: %s", resp.Status)
+		logger.Printf("Failed to get activity log for task %s: API returned status %d: %s", taskID, resp.StatusCode, resp.Status)
 		return -1
 	}
 
 	// Parse the activity log response
 	type ActivityResponse struct {
-		Count int `json:"count"`
+		Count  int `json:"count"`
 		Events []struct {
 			EventType string    `json:"event_type"`
 			EventDate time.Time `json:"event_date"`
@@ -217,7 +248,7 @@ func getDaysSinceCompletion(taskID string) int {
 
 	var activities ActivityResponse
 	if err := json.NewDecoder(resp.Body).Decode(&activities); err != nil {
-		logger.Printf("Error decoding activity log response: %v", err)
+		logger.Printf("Error decoding activity log response for task %s: %v", taskID, err)
 		return -1
 	}
 
@@ -230,37 +261,33 @@ func getDaysSinceCompletion(taskID string) int {
 	// Get the most recent completion event
 	latestEvent := activities.Events[0]
 	logger.Printf("Latest completion for task %s: %s", taskID, latestEvent.EventDate.Format(time.RFC3339))
-	
+
 	// Calculate days since completion
 	daysSince := int(time.Since(latestEvent.EventDate).Hours() / 24)
 	return daysSince
 }
 
 func getActiveTasks() ([]Task, error) {
-	client := &http.Client{
-		Timeout: time.Second * 30,
-	}
-
 	req, err := http.NewRequest("GET", apiURL+"/tasks", nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create request for tasks: %w", err)
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiToken)
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch tasks from API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get tasks: %s", resp.Status)
+		return nil, fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, resp.Status)
 	}
 
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode tasks response: %w", err)
 	}
 
 	return tasks, nil
@@ -268,10 +295,6 @@ func getActiveTasks() ([]Task, error) {
 
 // Update a task in Todoist
 func updateTask(taskID, content, description string) error {
-	client := &http.Client{
-		Timeout: time.Second * 30,
-	}
-
 	data := map[string]string{
 		"content":     content,
 		"description": description,
@@ -279,57 +302,78 @@ func updateTask(taskID, content, description string) error {
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal update data for task %s: %w", taskID, err)
 	}
 
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/tasks/%s", apiURL, taskID), bytes.NewBuffer(jsonData))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create update request for task %s: %w", taskID, err)
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiToken)
 	req.Header.Add("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to send update request for task %s: %w", taskID, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update task: %s", resp.Status)
+		return fmt.Errorf("failed to update task %s: API returned status %d: %s", taskID, resp.StatusCode, resp.Status)
 	}
 
 	return nil
 }
 
-// Process all tasks and update their staleness
+// ============================================================================
+// BUSINESS LOGIC FUNCTIONS
+// ============================================================================
+
 func processAllTasks() error {
 	// Get all tasks from Todoist
 	allTasks, err := getActiveTasks()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get tasks from Todoist: %w", err)
 	}
 
 	// Filter tasks based on rules
 	tasksToProcess := filterTasksForProcessing(allTasks)
 
-	logger.Printf("Found %d tasks to process", len(tasksToProcess))
+	logger.Printf("Found %d tasks to process out of %d total tasks", len(tasksToProcess), len(allTasks))
 
 	// Build task map for completion detection
 	buildTaskMap(tasksToProcess)
 
-	// Process each selected task
+	// Process each selected task - continue on individual failures
+	var failures []error
+	successCount := 0
+
 	for _, task := range tasksToProcess {
 		if err := processTask(task); err != nil {
-			logger.Printf("Error processing task %s: %v", task.ID, err)
+			logger.Printf("Error processing task %s (%s): %v", task.ID, task.Content, err)
+			failures = append(failures, fmt.Errorf("task %s: %w", task.ID, err))
+		} else {
+			successCount++
 		}
+	}
+
+	logger.Printf("Successfully processed %d tasks", successCount)
+
+	// Clear task map to free memory
+	for k := range recentTaskMap {
+		delete(recentTaskMap, k)
+	}
+
+	if len(failures) > 0 {
+		logger.Printf("Failed to process %d tasks", len(failures))
+		// Return first error but continue processing others
+		return fmt.Errorf("failed to process %d out of %d tasks: %w", len(failures), len(tasksToProcess), failures[0])
 	}
 
 	return nil
 }
 
-// shouldProcessTask determines if a task should be processed based on its labels and AUTOAGE_BY_DEFAULT.
 func shouldProcessTask(task Task) bool {
 	hasNoAutoAgeLabel := false
 	hasAutoAgeLabel := false
@@ -351,7 +395,6 @@ func shouldProcessTask(task Task) bool {
 	return hasAutoAgeLabel
 }
 
-// filterTasksForProcessing filters tasks based on the new rules.
 func filterTasksForProcessing(tasks []Task) []Task {
 	var tasksToProcess []Task
 	for _, task := range tasks {
@@ -362,7 +405,6 @@ func filterTasksForProcessing(tasks []Task) []Task {
 	return tasksToProcess
 }
 
-// Build map of tasks by base content for completion detection
 func buildTaskMap(tasks []Task) {
 	for _, task := range tasks {
 		_, baseContent, found := extractParenthesesCount(task.Content)
@@ -376,11 +418,13 @@ func buildTaskMap(tasks []Task) {
 	}
 }
 
-// Extract parentheses count from task content
+// ============================================================================
+// PARSER/UTILITY FUNCTIONS
+// ============================================================================
+
 func extractParenthesesCount(content string) (int, string, bool) {
-	// Regex to find pattern like "50)" or ")" or "))" etc.
-	regex := regexp.MustCompile(`^(\d*)(\)+)(.*)$`)
-	matches := regex.FindStringSubmatch(content)
+	// Use pre-compiled regex pattern
+	matches := parenthesesRegex.FindStringSubmatch(content)
 
 	if len(matches) != 4 {
 		return 0, content, false
@@ -401,8 +445,7 @@ func extractParenthesesCount(content string) (int, string, bool) {
 func parseMetadata(description string) time.Time {
 	var lastUpdated time.Time
 
-	// Regex to extract metadata from description
-	metadataRegex := regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
+	// Use pre-compiled regex pattern
 	matches := metadataRegex.FindStringSubmatch(description)
 
 	if len(matches) == 2 {
@@ -421,7 +464,6 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 	metadataStr := fmt.Sprintf("[auto: lastUpdated=%s]", lastUpdated.Format(time.RFC3339))
 
 	// If existing metadata found, replace it
-	metadataRegex := regexp.MustCompile(`\[auto: lastUpdated=[^\]]+\]`)
 	if metadataRegex.MatchString(description) {
 		return metadataRegex.ReplaceAllString(description, metadataStr)
 	}
@@ -453,148 +495,101 @@ func updateContentWithParentheses(baseContent string, count int) string {
 	return number + parentheses + remainingContent
 }
 
-// Check if a task was completed recently by looking for matching tasks
-func wasTaskCompleted(task Task) bool {
-	count, baseContent, found := extractParenthesesCount(task.Content)
-	if !found {
-		return false
+
+// Determine what action to take on a task based on its state
+func determineTaskAction(task Task, currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
+	// Check for reset conditions first
+	if isRecurring && daysSinceCompletion >= 0 {
+		return "reset", daysSinceCompletion + 1
 	}
 
-	// Normalize content
-	normalizedContent := strings.TrimSpace(baseContent)
-
-	// Look for tasks with the same base content
-	matchingTasks, found := recentTaskMap[normalizedContent]
-	if !found {
-		return false
-	}
-
-	// Check if any matching task has fewer parentheses (suggesting it was reset)
-	// First, collect all tasks with the same content pattern
-	taskVariants := make(map[string][]int) // map[content][]count
-	for _, matchingTask := range matchingTasks {
-		// Skip self-comparison
-		if matchingTask.ID == task.ID {
-			continue
-		}
-
-		matchCount, _, matchFound := extractParenthesesCount(matchingTask.Content)
-		if matchFound {
-			// Store all parentheses counts for this content pattern
-			taskVariants[normalizedContent] = append(taskVariants[normalizedContent], matchCount)
+	// Check if increment is needed based on midnight rule
+	if !lastUpdated.IsZero() {
+		now := time.Now()
+		if !shouldIncrementBasedOnMidnight(lastUpdated, now, timezone) {
+			return "skip", currentCount
 		}
 	}
 
-	// Look for evidence of task reset (a version with fewer parentheses)
-	for _, counts := range taskVariants {
-		for _, matchCount := range counts {
-			if matchCount < count {
-				// Found a version with fewer parentheses - task was completed and reset
-				logger.Printf("Task %s appears to be reset: found version with %d parentheses vs current %d",
-					task.ID, matchCount, count)
-				return true
-			}
-		}
-	}
-
-	return false
+	// Default action is increment
+	return "increment", currentCount + 1
 }
 
-// Process a single task and update its staleness
-func processTask(task Task) error {
-	// 1. Extract parentheses count, skip if can't extract
+// Process task logic without side effects - returns new content, description, and whether to update
+func processTaskLogic(task Task, isRecurring bool, daysSinceCompletion int, timezone *time.Location) (newContent string, newDescription string, shouldUpdate bool) {
+	// Extract current parentheses count
 	count, baseContent, found := extractParenthesesCount(task.Content)
-
 	if !found {
-		// No parentheses pattern found, not applicable for staleness tracking
+		return task.Content, task.Description, false
+	}
+
+	// Parse existing metadata
+	lastUpdated := parseMetadata(task.Description)
+
+	// Determine what action to take
+	action, newCount := determineTaskAction(task, count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
+
+	if action == "skip" {
+		return task.Content, task.Description, false
+	}
+
+	// Calculate new content and description
+	newContent = updateContentWithParentheses(baseContent, newCount)
+
+	// Only update if content actually changed
+	if newContent == task.Content {
+		return task.Content, task.Description, false
+	}
+
+	// Update metadata with current time
+	now := time.Now().In(timezone)
+	newDescription = updateDescriptionWithMetadata(task.Description, now)
+
+	return newContent, newDescription, true
+}
+
+func processTask(task Task) error {
+	// Check if task has parentheses pattern
+	_, _, found := extractParenthesesCount(task.Content)
+	if !found {
 		logger.Printf("Skipping task %s (no parentheses pattern found)", task.ID)
 		return nil
 	}
 
-	// Check if this is a recurring task
+	// Determine task characteristics
 	isRecurring := isRecurringTask(task)
-	
-	// For recurring tasks, first check if they've been completed recently
-	var shouldReset bool = false
-	var newParenCount int = 1
+	daysSinceCompletion := -1
+
+	// For recurring tasks, check completion status
 	if isRecurring {
-		// Check completion status from activity log
-		daysSinceCompletion := getDaysSinceCompletion(task.ID)
+		daysSinceCompletion = getDaysSinceCompletion(task.ID)
 		if daysSinceCompletion >= 0 {
-			// Task was completed recently, should reset
-			shouldReset = true
-			newParenCount = daysSinceCompletion + 1
-			logger.Printf("Task %s was completed %d days ago, will reset parentheses count to %d.", 
-				task.ID, daysSinceCompletion, newParenCount)
+			logger.Printf("Task %s was completed %d days ago, will reset parentheses count to %d.",
+				task.ID, daysSinceCompletion, daysSinceCompletion+1)
 		}
 	}
 
-	// Always reset if necessary, regardless of last update time
-	if shouldReset {
-		// Reset to number of days since completion + 1 for completed recurring tasks
-		newContent := updateContentWithParentheses(baseContent, newParenCount)
-		
-		// Check if the content actually changed
-		if newContent == task.Content {
-			logger.Printf("No change needed for task %s, skipping update", task.ID)
-			return nil
-		}
-		
-		now := time.Now().In(timezone)
-		newDescription := updateDescriptionWithMetadata(task.Description, now)
-		
-		logger.Printf("Resetting task %s: setting parentheses count to %d", task.ID, newParenCount)
-		
-		if dryRun {
-			logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
-			return nil
-		}
-		
-		// Update the task in Todoist
-		logger.Printf("Updating task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
-		return updateTask(task.ID, newContent, newDescription)
-	}
-	
-	// For increments (non-resets), apply the midnight alignment rule
-	lastUpdated := parseMetadata(task.Description)
-	if !lastUpdated.IsZero() {
-		now := time.Now()
-		if !shouldIncrementBasedOnMidnight(lastUpdated, now, timezone) {
-			logger.Printf("Skipping increment for task %s (midnight in configured timezone not reached)", task.ID)
-			return nil
-		}
-	}
-	
-	// If we reach here, we need to increment the parentheses count
-	var newCount int = count + 1
-	if isRecurring {
-		logger.Printf("Task %s (recurring) not completed recently. Incrementing parentheses count to %d.", 
-			task.ID, newCount)
-	} else {
-		logger.Printf("Task %s is non-recurring. Incrementing parentheses count to %d.", 
-			task.ID, newCount)
-	}
-	
-	// Update the task content with the new parentheses count
-	newContent := updateContentWithParentheses(baseContent, newCount)
-	
-	// Check if the content actually changed
-	if newContent == task.Content {
+	// Use pure function to determine what to do
+	newContent, newDescription, shouldUpdate := processTaskLogic(task, isRecurring, daysSinceCompletion, timezone)
+
+	if !shouldUpdate {
 		logger.Printf("No change needed for task %s, skipping update", task.ID)
 		return nil
 	}
-	
-	// Update metadata with current time in the configured timezone
-	now := time.Now().In(timezone)
-	newDescription := updateDescriptionWithMetadata(task.Description, now)
-	
+
+	// Log what we're doing
+	if daysSinceCompletion >= 0 {
+		logger.Printf("Resetting task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
+	} else {
+		logger.Printf("Incrementing task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
+	}
+
+	// Handle dry run mode
 	if dryRun {
 		logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
 		return nil
 	}
 
-	// Update the task in Todoist
-	logger.Printf("Updating task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
-	
+	// Perform the actual update
 	return updateTask(task.ID, newContent, newDescription)
 }

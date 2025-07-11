@@ -1,0 +1,3 @@
+- Keep all application code in a single file
+- Play devil's advocate. Push back on my requests if there is evidence to do something else.
+- You can do scratch work in the `scratch` directory which is gitignored. Please create a new directory under scratch for thinking through and experimenting for different topics.
