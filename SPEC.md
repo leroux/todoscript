@@ -62,7 +62,6 @@ type Task struct {
     Labels      []string `json:"labels"`       // Array of label strings
     IsCompleted bool     `json:"is_completed"` // Completion status
     Due         *DueDate `json:"due,omitempty"` // Due date information
-    IsRecurring bool     `json:"is_recurring,omitempty"` // Recurring flag
 }
 ```
 
@@ -136,9 +135,8 @@ Examples:
 ### Recurring Task Detection
 
 A task is considered recurring if ANY of these conditions are true:
-1. Has "recurring" label (case-insensitive)
-2. `Due.Recurring` field is true
-3. `IsRecurring` field is true
+1. Has "recurring" label (case-insensitive) - user-added label
+2. `Due.Recurring` field is true - official API field (`due.is_recurring`)
 
 ### Task Action Determination
 

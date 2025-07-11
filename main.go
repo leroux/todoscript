@@ -23,7 +23,6 @@ type Task struct {
 	Labels      []string `json:"labels"`
 	IsCompleted bool     `json:"is_completed"`
 	Due         *DueDate `json:"due,omitempty"`
-	IsRecurring bool     `json:"is_recurring,omitempty"`
 }
 
 // DueDate represents a task's due date information
@@ -81,7 +80,7 @@ func main() {
 	// Load configuration
 	err := loadConfig()
 	if err != nil {
-		logger.Fatalf("Error loading configuration: %v", err)
+		logger.Fatalf("Failed to load configuration: %v", err)
 	}
 
 	// Print mode info
@@ -92,7 +91,7 @@ func main() {
 
 	// Process tasks
 	if err := processAllTasks(); err != nil {
-		logger.Fatalf("Error processing tasks: %v", err)
+		logger.Fatalf("Failed to process tasks: %v", err)
 	}
 
 	logger.Println("Task processing completed successfully")
@@ -197,12 +196,6 @@ func isRecurringTask(task Task) bool {
 		return true
 	}
 
-	// Check based on IsRecurring field if available
-	if task.IsRecurring {
-		return true
-	}
-
-	// Otherwise, consider it non-recurring
 	return false
 }
 
@@ -219,7 +212,7 @@ func getDaysSinceCompletion(taskID string) int {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		logger.Printf("Error creating activity log request for task %s: %v", taskID, err)
+		logger.Printf("Failed to create activity log request for task %s: %v", taskID, err)
 		return -1
 	}
 
@@ -227,7 +220,7 @@ func getDaysSinceCompletion(taskID string) int {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		logger.Printf("Error fetching activity log for task %s: %v", taskID, err)
+		logger.Printf("Failed to fetch activity log for task %s: %v", taskID, err)
 		return -1
 	}
 	defer resp.Body.Close()
@@ -248,7 +241,7 @@ func getDaysSinceCompletion(taskID string) int {
 
 	var activities ActivityResponse
 	if err := json.NewDecoder(resp.Body).Decode(&activities); err != nil {
-		logger.Printf("Error decoding activity log response for task %s: %v", taskID, err)
+		logger.Printf("Failed to decode activity log response for task %s: %v", taskID, err)
 		return -1
 	}
 
@@ -270,14 +263,14 @@ func getDaysSinceCompletion(taskID string) int {
 func getActiveTasks() ([]Task, error) {
 	req, err := http.NewRequest("GET", apiURL+"/tasks", nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request for tasks: %w", err)
+		return nil, fmt.Errorf("create request failed: %w", err)
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiToken)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch tasks from API: %w", err)
+		return nil, fmt.Errorf("fetch tasks failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -287,7 +280,7 @@ func getActiveTasks() ([]Task, error) {
 
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		return nil, fmt.Errorf("failed to decode tasks response: %w", err)
+		return nil, fmt.Errorf("decode tasks failed: %w", err)
 	}
 
 	return tasks, nil
@@ -302,12 +295,12 @@ func updateTask(taskID, content, description string) error {
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal update data for task %s: %w", taskID, err)
+		return fmt.Errorf("marshal update data failed: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/tasks/%s", apiURL, taskID), bytes.NewBuffer(jsonData))
 	if err != nil {
-		return fmt.Errorf("failed to create update request for task %s: %w", taskID, err)
+		return fmt.Errorf("create update request failed: %w", err)
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiToken)
@@ -315,12 +308,12 @@ func updateTask(taskID, content, description string) error {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send update request for task %s: %w", taskID, err)
+		return fmt.Errorf("send update request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update task %s: API returned status %d: %s", taskID, resp.StatusCode, resp.Status)
+		return fmt.Errorf("update task failed: API returned status %d: %s", resp.StatusCode, resp.Status)
 	}
 
 	return nil
@@ -334,7 +327,7 @@ func processAllTasks() error {
 	// Get all tasks from Todoist
 	allTasks, err := getActiveTasks()
 	if err != nil {
-		return fmt.Errorf("failed to get tasks from Todoist: %w", err)
+		return fmt.Errorf("get tasks failed: %w", err)
 	}
 
 	// Filter tasks based on rules
@@ -351,7 +344,7 @@ func processAllTasks() error {
 
 	for _, task := range tasksToProcess {
 		if err := processTask(task); err != nil {
-			logger.Printf("Error processing task %s (%s): %v", task.ID, task.Content, err)
+			logger.Printf("Failed to process task %s (%s): %v", task.ID, task.Content, err)
 			failures = append(failures, fmt.Errorf("task %s: %w", task.ID, err))
 		} else {
 			successCount++
@@ -368,7 +361,7 @@ func processAllTasks() error {
 	if len(failures) > 0 {
 		logger.Printf("Failed to process %d tasks", len(failures))
 		// Return first error but continue processing others
-		return fmt.Errorf("failed to process %d out of %d tasks: %w", len(failures), len(tasksToProcess), failures[0])
+		return fmt.Errorf("process tasks failed: %d out of %d tasks: %w", len(failures), len(tasksToProcess), failures[0])
 	}
 
 	return nil
