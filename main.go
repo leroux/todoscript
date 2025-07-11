@@ -91,6 +91,26 @@ type DueDate struct {
 	Date      string `json:"date,omitempty"`
 }
 
+// TaskAgeInfo represents the result of parsing age markers from a task
+type TaskAgeInfo struct {
+	AgeCount         int    // Number of age markers (parentheses)
+	ContentWithoutAge string // Task content with age markers removed
+	HasAgeMarkers    bool   // Whether the task has age markers
+}
+
+// TaskUpdateInfo represents the result of calculating a task update
+type TaskUpdateInfo struct {
+	NewContent     string // Updated task content
+	NewDescription string // Updated task description
+	ShouldUpdate   bool   // Whether the task should be updated
+}
+
+// UpdateAction represents the action to take on a task
+type UpdateAction struct {
+	Action   string // "reset", "skip", or "increment"
+	NewCount int    // New age count after action
+}
+
 // Global variables
 var (
 	apiToken         string
@@ -99,7 +119,7 @@ var (
 	dryRun           bool
 	verbose          bool
 	autoAgeByDefault bool
-	recentTaskMap    map[string][]Task
+	tasksByContent    map[string][]Task // Maps task content to tasks for duplicate detection
 	logger           *log.Logger
 	timezone         *time.Location
 	// Pre-compiled regex patterns for task aging
@@ -124,7 +144,7 @@ var (
 // Main function
 func main() {
 	// Initialize task map
-	recentTaskMap = make(map[string][]Task)
+	tasksByContent = make(map[string][]Task)
 
 	// Initialize logger
 	// Check if log file is specified
@@ -272,7 +292,7 @@ func makeAuthenticatedRequest(method, url string, body io.Reader) (*http.Respons
 }
 
 // getTodoistData handles GET requests with JSON decoding
-func getTodoistData(url string, target interface{}) error {
+func getTodoistData(url string, target any) error {
 	resp, err := makeAuthenticatedRequest(httpMethodGet, url, nil)
 	if err != nil {
 		return err
@@ -291,7 +311,7 @@ func getTodoistData(url string, target interface{}) error {
 }
 
 // postTodoistData handles POST requests with JSON payload
-func postTodoistData(url string, payload interface{}) error {
+func postTodoistData(url string, payload any) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal request data failed: %w", err)
@@ -435,8 +455,8 @@ func processAllTasks() error {
 	logger.Printf("Successfully processed %d tasks", successCount)
 
 	// Clear task map to free memory
-	for k := range recentTaskMap {
-		delete(recentTaskMap, k)
+	for k := range tasksByContent {
+		delete(tasksByContent, k)
 	}
 
 	if len(failures) > 0 {
@@ -481,14 +501,14 @@ func filterTasksForProcessing(tasks []Task) []Task {
 
 func buildTaskMap(tasks []Task) {
 	for _, task := range tasks {
-		_, baseContent, found := parseTaskAgeMarkers(task.Content)
-		if !found {
+		ageInfo := parseTaskAgeMarkers(task.Content)
+		if !ageInfo.HasAgeMarkers {
 			continue
 		}
 
 		// Normalize content by trimming spaces
-		normalizedContent := strings.TrimSpace(baseContent)
-		recentTaskMap[normalizedContent] = append(recentTaskMap[normalizedContent], task)
+		cleanContent := strings.TrimSpace(ageInfo.ContentWithoutAge)
+		tasksByContent[cleanContent] = append(tasksByContent[cleanContent], task)
 	}
 }
 
@@ -497,14 +517,17 @@ func buildTaskMap(tasks []Task) {
 // ============================================================================
 
 // parseTaskAgeMarkers extracts the age count from a task's parentheses markers.
-// Returns: (ageCount, baseContent, hasAgeMarkers)
-// Example: "3))) Do something" → (3, "3 Do something", true)
-func parseTaskAgeMarkers(content string) (int, string, bool) {
+// Example: "3))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: "3 Do something", HasAgeMarkers: true}
+func parseTaskAgeMarkers(content string) TaskAgeInfo {
 	// Use pre-compiled regex pattern
 	matches := taskAgePattern.FindStringSubmatch(content)
 
 	if len(matches) != 4 {
-		return 0, content, false
+		return TaskAgeInfo{
+			AgeCount:         0,
+			ContentWithoutAge: content,
+			HasAgeMarkers:    false,
+		}
 	}
 
 	// Extract components
@@ -513,9 +536,13 @@ func parseTaskAgeMarkers(content string) (int, string, bool) {
 	remainingContent := matches[3]
 
 	count := len(parentheses)
-	baseContent := number + remainingContent
+	contentWithoutAge := number + remainingContent
 
-	return count, baseContent, true
+	return TaskAgeInfo{
+		AgeCount:         count,
+		ContentWithoutAge: contentWithoutAge,
+		HasAgeMarkers:    true,
+	}
 }
 
 // Parse metadata from task description
@@ -555,14 +582,14 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 // Update task content with new parentheses count
 // addAgeMarkersToContent adds the specified number of parentheses age markers to task content.
 // Example: addAgeMarkersToContent("3 Do something", 4) → "3)))) Do something"
-func addAgeMarkersToContent(baseContent string, count int) string {
+func addAgeMarkersToContent(contentWithoutAge string, count int) string {
 	// Find the optional number in the content
 	regex := regexp.MustCompile(`^(\d*)(.*)$`)
-	matches := regex.FindStringSubmatch(baseContent)
+	matches := regex.FindStringSubmatch(contentWithoutAge)
 
 	if len(matches) != 3 {
 		// If regex fails, just return the original content
-		return baseContent
+		return contentWithoutAge
 	}
 
 	number := matches[1]
@@ -574,66 +601,87 @@ func addAgeMarkersToContent(baseContent string, count int) string {
 	return number + parentheses + remainingContent
 }
 
-// Determine what action to take on a task based on its state
 // decideUpdateAction determines what action to take on a task based on its current state.
-// Returns: (action, newAgeCount) where action is "reset", "skip", or "increment"
-func decideUpdateAction(currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
+func decideUpdateAction(currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) UpdateAction {
 	// Check for reset conditions first
 	if isRecurring && daysSinceCompletion >= 0 {
-		return actionReset, daysSinceCompletion + 1
+		return UpdateAction{
+			Action:   actionReset,
+			NewCount: daysSinceCompletion + 1,
+		}
 	}
 
 	// Check if increment is needed based on midnight rule
 	if !lastUpdated.IsZero() {
 		now := time.Now()
 		if !shouldIncrementBasedOnMidnight(lastUpdated, now, timezone) {
-			return actionSkip, currentCount
+			return UpdateAction{
+				Action:   actionSkip,
+				NewCount: currentCount,
+			}
 		}
 	}
 
 	// Default action is increment
-	return actionIncrement, currentCount + 1
+	return UpdateAction{
+		Action:   actionIncrement,
+		NewCount: currentCount + 1,
+	}
 }
 
-// Process task logic without side effects - returns new content, description, and whether to update
 // calculateTaskUpdate determines the new content and description for a task based on aging rules.
-// Returns: (newContent, newDescription, shouldUpdate)
-func calculateTaskUpdate(task Task, isRecurring bool, daysSinceCompletion int, timezone *time.Location) (newContent string, newDescription string, shouldUpdate bool) {
+func calculateTaskUpdate(task Task, isRecurring bool, daysSinceCompletion int, timezone *time.Location) TaskUpdateInfo {
 	// Extract current parentheses count
-	count, baseContent, found := parseTaskAgeMarkers(task.Content)
-	if !found {
-		return task.Content, task.Description, false
+	ageInfo := parseTaskAgeMarkers(task.Content)
+	if !ageInfo.HasAgeMarkers {
+		return TaskUpdateInfo{
+			NewContent:     task.Content,
+			NewDescription: task.Description,
+			ShouldUpdate:   false,
+		}
 	}
 
 	// Parse existing metadata
 	lastUpdated := parseMetadata(task.Description)
 
 	// Determine what action to take
-	action, newCount := decideUpdateAction(count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
+	updateAction := decideUpdateAction(ageInfo.AgeCount, isRecurring, daysSinceCompletion, lastUpdated, timezone)
 
-	if action == actionSkip {
-		return task.Content, task.Description, false
+	if updateAction.Action == actionSkip {
+		return TaskUpdateInfo{
+			NewContent:     task.Content,
+			NewDescription: task.Description,
+			ShouldUpdate:   false,
+		}
 	}
 
 	// Calculate new content and description
-	newContent = addAgeMarkersToContent(baseContent, newCount)
+	newContent := addAgeMarkersToContent(ageInfo.ContentWithoutAge, updateAction.NewCount)
 
 	// Only update if content actually changed
 	if newContent == task.Content {
-		return task.Content, task.Description, false
+		return TaskUpdateInfo{
+			NewContent:     task.Content,
+			NewDescription: task.Description,
+			ShouldUpdate:   false,
+		}
 	}
 
 	// Update metadata with current time
 	now := time.Now().In(timezone)
-	newDescription = updateDescriptionWithMetadata(task.Description, now)
+	newDescription := updateDescriptionWithMetadata(task.Description, now)
 
-	return newContent, newDescription, true
+	return TaskUpdateInfo{
+		NewContent:     newContent,
+		NewDescription: newDescription,
+		ShouldUpdate:   true,
+	}
 }
 
 func processTask(task Task) error {
 	// Check if task has parentheses pattern
-	_, _, found := parseTaskAgeMarkers(task.Content)
-	if !found {
+	ageInfo := parseTaskAgeMarkers(task.Content)
+	if !ageInfo.HasAgeMarkers {
 		logger.Printf("Skipping task %s (no parentheses pattern found)", task.ID)
 		return nil
 	}
@@ -652,26 +700,26 @@ func processTask(task Task) error {
 	}
 
 	// Use pure function to determine what to do
-	newContent, newDescription, shouldUpdate := calculateTaskUpdate(task, isRecurring, daysSinceCompletion, timezone)
+	updateInfo := calculateTaskUpdate(task, isRecurring, daysSinceCompletion, timezone)
 
-	if !shouldUpdate {
+	if !updateInfo.ShouldUpdate {
 		logger.Printf("No change needed for task %s, skipping update", task.ID)
 		return nil
 	}
 
 	// Log what we're doing
 	if daysSinceCompletion >= 0 {
-		logger.Printf("Resetting task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
+		logger.Printf("Resetting task %s: \"%s\" -> \"%s\"", task.ID, task.Content, updateInfo.NewContent)
 	} else {
-		logger.Printf("Incrementing task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
+		logger.Printf("Incrementing task %s: \"%s\" -> \"%s\"", task.ID, task.Content, updateInfo.NewContent)
 	}
 
 	// Handle dry run mode
 	if dryRun {
-		logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"", task.ID, task.Content, newContent)
+		logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"", task.ID, task.Content, updateInfo.NewContent)
 		return nil
 	}
 
 	// Perform the actual update
-	return updateTask(task.ID, newContent, newDescription)
+	return updateTask(task.ID, updateInfo.NewContent, updateInfo.NewDescription)
 }
