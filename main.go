@@ -33,6 +33,9 @@ import (
 
 // Constants
 const (
+	// Task aging marker
+	taskAgingMarker = ")"
+
 	// HTTP client configuration
 	httpTimeoutSeconds     = 30
 	maxIdleConnections     = 10
@@ -142,11 +145,14 @@ var (
 	// Pre-compiled regex patterns for task aging
 	// taskAgePattern matches tasks with age markers: "3))) Do something"
 	// Groups: (1) optional number, (2) parentheses markers, (3) remaining content
-	taskAgePattern = regexp.MustCompile(`^(\d*)(\)+)(.*)$`)
+	taskAgePattern = regexp.MustCompile(`^(\d*)([` + taskAgingMarker + `]+)(.*)$`)
 	
 	// metadataPattern matches our auto-generated metadata in task descriptions
 	// Matches: "[auto: lastUpdated=2023-12-25T10:30:00Z]"
 	metadataPattern = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
+	// contentStartRegex matches the optional number at the start of content
+	contentStartRegex = regexp.MustCompile(`^(\d*)(.*)$`)
+
 	// Shared HTTP client for better performance
 	httpClient = &http.Client{
 		Timeout: time.Second * httpTimeoutSeconds,
@@ -187,22 +193,23 @@ func main() {
 
 	// Print mode info
 	if dryRun {
-		logger.Println("Running in dry-run mode (no changes will be made)")
+		logger.Printf("Running in dry-run mode (no changes will be made)")
 	}
-	logger.Println("Starting task processing...")
+	logger.Printf("Starting task processing...")
 
 	// Process tasks
 	if err := processAllTasks(); err != nil {
 		logger.Fatalf("Failed to process tasks: %v", err)
 	}
 
-	logger.Println("Task processing completed successfully")
+	logger.Printf("Task processing completed successfully")
 }
 
 // Load configuration from environment variables
 func loadConfig() error {
 	// Load .env file if it exists
-	err := godotenv.Load()
+	var err error
+	err = godotenv.Load()
 	if err != nil && !os.IsNotExist(err) {
 		logger.Printf("Warning: Error loading .env file: %v", err)
 	}
@@ -210,7 +217,7 @@ func loadConfig() error {
 	// Get API token
 	apiToken = os.Getenv(envTodoistToken)
 	if apiToken == "" {
-		return fmt.Errorf("missing required environment variable: %s", envTodoistToken)
+		return fmt.Errorf("loading configuration failed: missing required environment variable %s", envTodoistToken)
 	}
 
 	// Parse dry run flag
@@ -249,10 +256,9 @@ func loadConfig() error {
 		timezoneName = defaultTimezone // Default to UTC if not specified
 	}
 
-	var timezoneErr error
-	timezone, timezoneErr = time.LoadLocation(timezoneName)
-	if timezoneErr != nil {
-		logger.Printf("Warning: Invalid timezone '%s', defaulting to UTC: %v", timezoneName, timezoneErr)
+	timezone, err = time.LoadLocation(timezoneName)
+	if err != nil {
+		logger.Printf("Warning: Invalid timezone '%s', defaulting to UTC: %v", timezoneName, err)
 		timezone = time.UTC
 	}
 
@@ -292,7 +298,7 @@ func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Locatio
 func makeAuthenticatedRequest(method, url string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request creation failed: %w", err)
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiToken)
@@ -302,10 +308,18 @@ func makeAuthenticatedRequest(method, url string, body io.Reader) (*http.Respons
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request execution failed: %w", err)
 	}
 
 	return resp, nil
+}
+
+// validateHTTPResponse validates that an HTTP response has a success status code
+func validateHTTPResponse(resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API request failed: status %d: %s", resp.StatusCode, resp.Status)
+	}
+	return nil
 }
 
 // getTodoistData handles GET requests with JSON decoding
@@ -316,12 +330,12 @@ func getTodoistData(url string, target any) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, resp.Status)
+	if err := validateHTTPResponse(resp); err != nil {
+		return err
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		return fmt.Errorf("decode response failed: %w", err)
+		return fmt.Errorf("JSON response decoding failed: %w", err)
 	}
 
 	return nil
@@ -331,7 +345,7 @@ func getTodoistData(url string, target any) error {
 func postTodoistData(url string, payload any) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal request data failed: %w", err)
+		return fmt.Errorf("JSON request serialization failed: %w", err)
 	}
 
 	resp, err := makeAuthenticatedRequest(httpMethodPost, url, bytes.NewBuffer(jsonData))
@@ -340,8 +354,8 @@ func postTodoistData(url string, payload any) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, resp.Status)
+	if err := validateHTTPResponse(resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -411,7 +425,7 @@ func getDaysSinceCompletion(taskID string) int {
 func getActiveTasks() ([]Task, error) {
 	var tasks []Task
 	if err := getTodoistData(apiURL+"/tasks", &tasks); err != nil {
-		return nil, fmt.Errorf("get tasks failed: %w", err)
+		return nil, fmt.Errorf("Todoist task retrieval failed: %w", err)
 	}
 
 	return tasks, nil
@@ -426,7 +440,7 @@ func updateTask(taskID, content, description string) error {
 
 	url := fmt.Sprintf("%s/tasks/%s", apiURL, taskID)
 	if err := postTodoistData(url, data); err != nil {
-		return fmt.Errorf("update task failed: %w", err)
+		return fmt.Errorf("Todoist task update failed: %w", err)
 	}
 
 	return nil
@@ -458,7 +472,7 @@ func processAllTasks() error {
 	for _, task := range tasksToProcess {
 		if err := processTask(task); err != nil {
 			logger.Printf("Failed to process task %s (%s): %v", task.ID, task.Content, err)
-			failures = append(failures, fmt.Errorf("task %s: %w", task.ID, err))
+			failures = append(failures, fmt.Errorf("task ID %s processing failed: %w", task.ID, err))
 		} else {
 			successCount++
 		}
@@ -474,7 +488,7 @@ func processAllTasks() error {
 	if len(failures) > 0 {
 		logger.Printf("Failed to process %d tasks", len(failures))
 		// Return first error but continue processing others
-		return fmt.Errorf("process tasks failed: %d out of %d tasks: %w", len(failures), len(tasksToProcess), failures[0])
+		return fmt.Errorf("Task processing failed: %d out of %d tasks failed: %w", len(failures), len(tasksToProcess), failures[0])
 	}
 
 	return nil
@@ -516,7 +530,7 @@ func filterTasksForProcessing(tasks []Task) []Task {
 // buildTaskMap creates a map of task content to tasks for duplicate detection.
 func buildTaskMap(tasks []Task) {
 	for _, task := range tasks {
-		ageInfo := parseTaskAgeMarkers(task.Content)
+		ageInfo := extractTaskAgingInfo(task.Content)
 		if !ageInfo.HasAgeMarkers {
 			continue
 		}
@@ -531,40 +545,10 @@ func buildTaskMap(tasks []Task) {
 // PARSER/UTILITY FUNCTIONS
 // ============================================================================
 
-// parseTaskAgeMarkers extracts the age count from a task's parentheses markers.
+// extractTaskAgingInfo extracts the age count from a task's parentheses markers.
 // Example: "3))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: "3 Do something", HasAgeMarkers: true}
-func parseTaskAgeMarkers(content string) TaskAgeInfo {
-	// Use pre-compiled regex pattern
-	matches := taskAgePattern.FindStringSubmatch(content)
-
-	if len(matches) != 4 {
-		return TaskAgeInfo{
-			AgeCount:         0,
-			ContentWithoutAge: content,
-			HasAgeMarkers:    false,
-		}
-	}
-
-	// Extract components from regex groups
-	// Group 1: optional number prefix (e.g., "3" in "3))) task")
-	// Group 2: parentheses markers (e.g., ")))" in "3))) task")
-	// Group 3: remaining content (e.g., " task" in "3))) task")
-	numberPrefix := matches[1]
-	ageMarkers := matches[2]
-	taskContent := matches[3]
-
-	ageCount := len(ageMarkers)
-	contentWithoutAge := numberPrefix + taskContent
-
-	return TaskAgeInfo{
-		AgeCount:         ageCount,
-		ContentWithoutAge: contentWithoutAge,
-		HasAgeMarkers:    true,
-	}
-}
-
-// parseMetadata extracts the last updated timestamp from task description metadata.
-func parseMetadata(description string) time.Time {
+// extractMetadataTimestamp extracts the last updated timestamp from task description metadata.
+func extractMetadataTimestamp(description string) time.Time {
 	var lastUpdated time.Time
 
 	// Use pre-compiled regex pattern
@@ -598,13 +582,45 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 	return description + "\n\n" + metadataStr
 }
 
+// extractTaskAgingInfo extracts the age count from a task's parentheses markers.
+// Example: "3))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: "3 Do something", HasAgeMarkers: true}
+func extractTaskAgingInfo(content string) TaskAgeInfo {
+	// Use pre-compiled regex pattern
+	matches := taskAgePattern.FindStringSubmatch(content)
+
+	if len(matches) != 4 {
+		return TaskAgeInfo{
+			AgeCount:         0,
+			ContentWithoutAge: content,
+			HasAgeMarkers:    false,
+		}
+	}
+
+	// Extract components from regex groups
+	// Group 1: optional number prefix (e.g., "3" in "3))) task")
+	// Group 2: parentheses markers (e.g., ")))" in "3))) task")
+	// Group 3: remaining content (e.g., " task" in "3))) task")
+	numberPrefix := matches[1]
+	ageMarkers := matches[2]
+	taskContent := matches[3]
+
+	ageCount := len(ageMarkers)
+	contentWithoutAge := numberPrefix + taskContent
+
+	return TaskAgeInfo{
+		AgeCount:         ageCount,
+		ContentWithoutAge: contentWithoutAge,
+		HasAgeMarkers:    true,
+	}
+}
+
+
 // Update task content with new parentheses count
-// addAgeMarkersToContent adds the specified number of parentheses age markers to task content.
-// Example: addAgeMarkersToContent("3 Do something", 4) → "3)))) Do something"
-func addAgeMarkersToContent(contentWithoutAge string, count int) string {
+// addAgingMarkersToContent adds the specified number of parentheses age markers to task content.
+// Example: addAgingMarkersToContent("3 Do something", 4) → "3)))) Do something"
+func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 	// Find the optional number in the content
-	regex := regexp.MustCompile(`^(\d*)(.*)$`)
-	matches := regex.FindStringSubmatch(contentWithoutAge)
+	matches := contentStartRegex.FindStringSubmatch(contentWithoutAge)
 
 	if len(matches) != 3 {
 		// If regex fails, just return the original content
@@ -618,7 +634,7 @@ func addAgeMarkersToContent(contentWithoutAge string, count int) string {
 	remainingContent := matches[2]
 
 	// Create string with the specified number of parentheses
-	ageMarkers := strings.Repeat(")", count)
+	ageMarkers := strings.Repeat(taskAgingMarker, count)
 
 	return numberPrefix + ageMarkers + remainingContent
 }
@@ -654,7 +670,7 @@ func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time
 // calculateTaskUpdate determines the new content and description for a task based on aging rules.
 func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	// Extract current parentheses count
-	ageInfo := parseTaskAgeMarkers(ctx.Task.Content)
+	ageInfo := extractTaskAgingInfo(ctx.Task.Content)
 	if !ageInfo.HasAgeMarkers {
 		return TaskUpdateInfo{
 			NewContent:     ctx.Task.Content,
@@ -664,7 +680,7 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	}
 
 	// Parse existing metadata
-	lastUpdated := parseMetadata(ctx.Task.Description)
+	lastUpdated := extractMetadataTimestamp(ctx.Task.Description)
 
 	// Determine what action to take
 	updateAction := decideUpdateAction(ageInfo.AgeCount, ctx, lastUpdated)
@@ -678,7 +694,7 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	}
 
 	// Calculate new content and description
-	newContent := addAgeMarkersToContent(ageInfo.ContentWithoutAge, updateAction.NewCount)
+	newContent := addAgingMarkersToContent(ageInfo.ContentWithoutAge, updateAction.NewCount)
 
 	// Only update if content actually changed
 	if newContent == ctx.Task.Content {
@@ -703,7 +719,7 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 // processTask processes a single task for aging and updates it if needed.
 func processTask(task Task) error {
 	// Check if task has parentheses pattern
-	ageInfo := parseTaskAgeMarkers(task.Content)
+	ageInfo := extractTaskAgingInfo(task.Content)
 	if !ageInfo.HasAgeMarkers {
 		logger.Printf("Skipping task %s (no parentheses pattern found)", task.ID)
 		return nil
