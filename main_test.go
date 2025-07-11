@@ -111,6 +111,183 @@ func TestAddAgingMarkersToContent(t *testing.T) {
 	}
 }
 
+// TestCalculateDaysSinceUpdate tests the calculateDaysSinceUpdate function
+func TestCalculateDaysSinceUpdate(t *testing.T) {
+	// Set up timezone for consistent test results
+	tz, _ := time.LoadLocation("UTC")
+	
+	// Base time: 2023-01-01 12:00:00 UTC
+	baseTime := time.Date(2023, 1, 1, 12, 0, 0, 0, tz)
+	
+	tests := []struct {
+		name        string
+		lastUpdated time.Time
+		now         time.Time
+		timezone    *time.Location
+		wantDays    int
+	}{
+		{
+			name:        "Same day",
+			lastUpdated: baseTime,                          // 2023-01-01 12:00:00
+			now:         baseTime.Add(6 * time.Hour),       // 2023-01-01 18:00:00
+			timezone:    tz,
+			wantDays:    0,
+		},
+		{
+			name:        "One day passed",
+			lastUpdated: baseTime,                          // 2023-01-01 12:00:00
+			now:         baseTime.Add(24 * time.Hour),      // 2023-01-02 12:00:00
+			timezone:    tz,
+			wantDays:    1,
+		},
+		{
+			name:        "Three days passed",
+			lastUpdated: baseTime,                          // 2023-01-01 12:00:00
+			now:         baseTime.Add(3 * 24 * time.Hour),  // 2023-01-04 12:00:00
+			timezone:    tz,
+			wantDays:    3,
+		},
+		{
+			name:        "Across month boundary",
+			lastUpdated: time.Date(2023, 1, 31, 12, 0, 0, 0, tz), // 2023-01-31 12:00:00
+			now:         time.Date(2023, 2, 3, 12, 0, 0, 0, tz),  // 2023-02-03 12:00:00
+			timezone:    tz,
+			wantDays:    3,
+		},
+		{
+			name:        "Time goes backwards (shouldn't happen but should handle gracefully)",
+			lastUpdated: baseTime.Add(24 * time.Hour),      // 2023-01-02 12:00:00
+			now:         baseTime,                          // 2023-01-01 12:00:00
+			timezone:    tz,
+			wantDays:    0, // Should never be negative
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateDaysSinceUpdate(tt.lastUpdated, tt.now, tt.timezone)
+			if got != tt.wantDays {
+				t.Errorf("calculateDaysSinceUpdate() = %v, want %v", got, tt.wantDays)
+			}
+		})
+	}
+}
+
+// TestDecideUpdateAction tests all aspects of decideUpdateAction
+func TestDecideUpdateAction(t *testing.T) {
+	tz, _ := time.LoadLocation("UTC")
+	now := time.Now()
+	yesterday := now.Add(-24 * time.Hour)
+	threeDaysAgo := now.Add(-3 * 24 * time.Hour)
+	
+	tests := []struct {
+		name         string
+		currentCount int
+		ctx          TaskContext
+		lastUpdated  time.Time
+		want         UpdateAction
+	}{
+		{
+			name:         "Reset - recurring task completed today",
+			currentCount: 5,
+			ctx: TaskContext{
+				IsRecurring:         true,
+				DaysSinceCompletion: 0,
+				Timezone:            tz,
+			},
+			lastUpdated: yesterday,
+			want: UpdateAction{
+				Action:   actionReset,
+				NewCount: 0,
+			},
+		},
+		{
+			name:         "Reset - recurring task completed 3 days ago",
+			currentCount: 5,
+			ctx: TaskContext{
+				IsRecurring:         true,
+				DaysSinceCompletion: 3,
+				Timezone:            tz,
+			},
+			lastUpdated: yesterday,
+			want: UpdateAction{
+				Action:   actionReset,
+				NewCount: 4, // DaysSinceCompletion + 1
+			},
+		},
+		{
+			name:         "Skip - not enough time passed",
+			currentCount: 2,
+			ctx: TaskContext{
+				IsRecurring:         false,
+				DaysSinceCompletion: -1,
+				Timezone:            tz,
+			},
+			lastUpdated: now.Add(-2 * time.Hour), // Just 2 hours ago, same day
+			want: UpdateAction{
+				Action:   actionSkip,
+				NewCount: 2, // No change
+			},
+		},
+		{
+			name:         "Increment by 1 - one day passed",
+			currentCount: 2,
+			ctx: TaskContext{
+				IsRecurring:         false,
+				DaysSinceCompletion: -1,
+				Timezone:            tz,
+			},
+			lastUpdated: yesterday, // One day ago
+			want: UpdateAction{
+				Action:   actionIncrement,
+				NewCount: 3, // Add 1
+			},
+		},
+		{
+			name:         "Increment by 3 - three days passed",
+			currentCount: 2,
+			ctx: TaskContext{
+				IsRecurring:         false,
+				DaysSinceCompletion: -1,
+				Timezone:            tz,
+			},
+			lastUpdated: threeDaysAgo, // Three days ago
+			want: UpdateAction{
+				Action:   actionIncrement,
+				NewCount: 5, // Add 3
+			},
+		},
+		{
+			name:         "No lastUpdated time - use default increment",
+			currentCount: 2,
+			ctx: TaskContext{
+				IsRecurring:         false,
+				DaysSinceCompletion: -1,
+				Timezone:            tz,
+			},
+			lastUpdated: time.Time{}, // Zero time
+			want: UpdateAction{
+				Action:   actionIncrement,
+				NewCount: 3, // Default increment by 1
+			},
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := decideUpdateAction(tt.currentCount, tt.ctx, tt.lastUpdated)
+			
+			if got.Action != tt.want.Action {
+				t.Errorf("decideUpdateAction().Action = %v, want %v", got.Action, tt.want.Action)
+			}
+			
+			if got.NewCount != tt.want.NewCount {
+				t.Errorf("decideUpdateAction().NewCount = %v, want %v", got.NewCount, tt.want.NewCount)
+			}
+		})
+	}
+}
+
 // TestDecideUpdateAction_Reset tests the reset action of decideUpdateAction
 func TestDecideUpdateAction_Reset(t *testing.T) {
 	tz, _ := time.LoadLocation("UTC")

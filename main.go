@@ -291,6 +291,36 @@ func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Locatio
 	return nowInTZ.After(nextMidnight) || nowInTZ.Equal(nextMidnight)
 }
 
+// calculateDaysSinceUpdate calculates the number of days that have passed
+// between the lastUpdated time and now in the specified timezone.
+// This is used to correctly increment the age markers when the script hasn't run for multiple days.
+func calculateDaysSinceUpdate(lastUpdated, now time.Time, tz *time.Location) int {
+	// Convert times to the configured timezone
+	lastUpdatedInTZ := lastUpdated.In(tz)
+	nowInTZ := now.In(tz)
+
+	// Truncate to days to ensure we're counting full days
+	lastUpdatedDay := time.Date(
+		lastUpdatedInTZ.Year(), lastUpdatedInTZ.Month(), lastUpdatedInTZ.Day(),
+		0, 0, 0, 0, tz,
+	)
+	
+	nowDay := time.Date(
+		nowInTZ.Year(), nowInTZ.Month(), nowInTZ.Day(),
+		0, 0, 0, 0, tz,
+	)
+
+	// Calculate days difference
+	days := int(nowDay.Sub(lastUpdatedDay).Hours() / hoursPerDay)
+	
+	// Ensure we don't return negative days
+	if days < 0 {
+		days = 0
+	}
+	
+	return days
+}
+
 // ============================================================================
 // HTTP HELPER FUNCTIONS
 // ============================================================================
@@ -677,9 +707,21 @@ func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time
 				NewCount: currentCount,
 			}
 		}
+		
+		// Calculate days since last update to handle cases where the script
+		// didn't run for multiple days
+		daysSinceUpdate := calculateDaysSinceUpdate(lastUpdated, now, ctx.Timezone)
+		
+		// We need at least 1 day to increment
+		if daysSinceUpdate > 0 {
+			return UpdateAction{
+				Action:   actionIncrement,
+				NewCount: currentCount + daysSinceUpdate,
+			}
+		}
 	}
 
-	// Default action is increment
+	// Default action is increment by 1 (for cases where lastUpdated is zero)
 	return UpdateAction{
 		Action:   actionIncrement,
 		NewCount: currentCount + 1,

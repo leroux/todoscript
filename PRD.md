@@ -78,7 +78,8 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 - Spaces will be automatically normalized during processing
 
 ### Staleness Increment Rules
-- Increment parentheses count once per day maximum
+- Increment parentheses count based on days since last update
+- If script hasn't run for multiple days, add correct number of parentheses for missed days
 - Use timezone-aware day calculations
 - Skip tasks already updated on the same day
 - Do not apply aging to subtasks (tasks with a parent_id)
