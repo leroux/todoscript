@@ -15,6 +15,50 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Constants
+const (
+	// HTTP client configuration
+	httpTimeoutSeconds      = 30
+	maxIdleConnections     = 10
+	maxIdleConnsPerHost    = 2
+	idleConnTimeoutSeconds = 90
+
+	// File permissions
+	logFilePermissions = 0666
+
+	// Time calculations
+	hoursPerDay = 24
+
+	// Environment variables
+	envLogFile        = "LOG_FILE"
+	envTodoistToken   = "TODOIST_TOKEN"
+	envDryRun         = "DRY_RUN"
+	envVerbose        = "VERBOSE"
+	envAutoAgeDefault = "AUTOAGE_BY_DEFAULT"
+	envTimezone       = "TIMEZONE"
+
+	// Default values
+	defaultTimezone = "UTC"
+
+	// Task labels
+	labelRecurring = "recurring"
+	labelNoAutoAge = "no-autoage"
+	labelAutoAge   = "autoage"
+
+	// Task actions
+	actionReset     = "reset"
+	actionSkip      = "skip"
+	actionIncrement = "increment"
+
+	// HTTP methods
+	httpMethodGet  = "GET"
+	httpMethodPost = "POST"
+
+	// JSON fields
+	jsonFieldContent     = "content"
+	jsonFieldDescription = "description"
+)
+
 // Task represents a Todoist task
 type Task struct {
 	ID          string   `json:"id"`
@@ -47,11 +91,11 @@ var (
 	metadataRegex    = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
 	// Shared HTTP client for better performance
 	httpClient = &http.Client{
-		Timeout: time.Second * 30,
+		Timeout: time.Second * httpTimeoutSeconds,
 		Transport: &http.Transport{
-			MaxIdleConns:        10,
-			MaxIdleConnsPerHost: 2,
-			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:        maxIdleConnections,
+			MaxIdleConnsPerHost: maxIdleConnsPerHost,
+			IdleConnTimeout:     idleConnTimeoutSeconds * time.Second,
 		},
 	}
 )
@@ -63,12 +107,12 @@ func main() {
 
 	// Initialize logger
 	// Check if log file is specified
-	logFile := os.Getenv("LOG_FILE")
+	logFile := os.Getenv(envLogFile)
 	var logOutput *os.File = os.Stdout
 
 	if logFile != "" {
 		var err error
-		logOutput, err = os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		logOutput, err = os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFilePermissions)
 		if err != nil {
 			log.Fatalf("Failed to open log file: %v", err)
 		}
@@ -106,13 +150,13 @@ func loadConfig() error {
 	}
 
 	// Get API token
-	apiToken = os.Getenv("TODOIST_TOKEN")
+	apiToken = os.Getenv(envTodoistToken)
 	if apiToken == "" {
-		return fmt.Errorf("missing required environment variable: TODOIST_TOKEN")
+		return fmt.Errorf("missing required environment variable: %s", envTodoistToken)
 	}
 
 	// Parse dry run flag
-	dryRunStr := os.Getenv("DRY_RUN")
+	dryRunStr := os.Getenv(envDryRun)
 	if dryRunStr != "" {
 		dryRun, err = strconv.ParseBool(dryRunStr)
 		if err != nil {
@@ -122,7 +166,7 @@ func loadConfig() error {
 	}
 
 	// Parse verbose flag
-	verboseStr := os.Getenv("VERBOSE")
+	verboseStr := os.Getenv(envVerbose)
 	if verboseStr != "" {
 		verbose, err = strconv.ParseBool(verboseStr)
 		if err != nil {
@@ -132,7 +176,7 @@ func loadConfig() error {
 	}
 
 	// Parse auto age by default flag
-	autoAgeByDefaultStr := os.Getenv("AUTOAGE_BY_DEFAULT")
+	autoAgeByDefaultStr := os.Getenv(envAutoAgeDefault)
 	if autoAgeByDefaultStr != "" {
 		autoAgeByDefault, err = strconv.ParseBool(autoAgeByDefaultStr)
 		if err != nil {
@@ -142,9 +186,9 @@ func loadConfig() error {
 	}
 
 	// Set timezone
-	tzName := os.Getenv("TIMEZONE")
+	tzName := os.Getenv(envTimezone)
 	if tzName == "" {
-		tzName = "UTC" // Default to UTC if not specified
+		tzName = defaultTimezone // Default to UTC if not specified
 	}
 
 	var tzErr error
@@ -186,7 +230,7 @@ func shouldIncrementBasedOnMidnight(lastUpdated, now time.Time, tz *time.Locatio
 func isRecurringTask(task Task) bool {
 	// Check if the task has the 'recurring' label
 	for _, label := range task.Labels {
-		if strings.ToLower(label) == "recurring" {
+		if strings.ToLower(label) == labelRecurring {
 			return true
 		}
 	}
@@ -210,7 +254,7 @@ func getDaysSinceCompletion(taskID string) int {
 	// Create the URL with query parameters for the activity log request
 	url := fmt.Sprintf("%s?object_type=item&object_id=%s&event_type=completed&limit=1", activityURL, taskID)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(httpMethodGet, url, nil)
 	if err != nil {
 		logger.Printf("Failed to create activity log request for task %s: %v", taskID, err)
 		return -1
@@ -256,12 +300,12 @@ func getDaysSinceCompletion(taskID string) int {
 	logger.Printf("Latest completion for task %s: %s", taskID, latestEvent.EventDate.Format(time.RFC3339))
 
 	// Calculate days since completion
-	daysSince := int(time.Since(latestEvent.EventDate).Hours() / 24)
+	daysSince := int(time.Since(latestEvent.EventDate).Hours() / hoursPerDay)
 	return daysSince
 }
 
 func getActiveTasks() ([]Task, error) {
-	req, err := http.NewRequest("GET", apiURL+"/tasks", nil)
+	req, err := http.NewRequest(httpMethodGet, apiURL+"/tasks", nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
@@ -289,8 +333,8 @@ func getActiveTasks() ([]Task, error) {
 // Update a task in Todoist
 func updateTask(taskID, content, description string) error {
 	data := map[string]string{
-		"content":     content,
-		"description": description,
+		jsonFieldContent:     content,
+		jsonFieldDescription: description,
 	}
 
 	jsonData, err := json.Marshal(data)
@@ -298,7 +342,7 @@ func updateTask(taskID, content, description string) error {
 		return fmt.Errorf("marshal update data failed: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/tasks/%s", apiURL, taskID), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest(httpMethodPost, fmt.Sprintf("%s/tasks/%s", apiURL, taskID), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("create update request failed: %w", err)
 	}
@@ -372,10 +416,10 @@ func shouldProcessTask(task Task) bool {
 	hasAutoAgeLabel := false
 
 	for _, label := range task.Labels {
-		if label == "no-autoage" {
+		if label == labelNoAutoAge {
 			hasNoAutoAgeLabel = true
 		}
-		if label == "autoage" {
+		if label == labelAutoAge {
 			hasAutoAgeLabel = true
 		}
 	}
@@ -493,19 +537,19 @@ func updateContentWithParentheses(baseContent string, count int) string {
 func determineTaskAction(task Task, currentCount int, isRecurring bool, daysSinceCompletion int, lastUpdated time.Time, timezone *time.Location) (action string, newCount int) {
 	// Check for reset conditions first
 	if isRecurring && daysSinceCompletion >= 0 {
-		return "reset", daysSinceCompletion + 1
+		return actionReset, daysSinceCompletion + 1
 	}
 
 	// Check if increment is needed based on midnight rule
 	if !lastUpdated.IsZero() {
 		now := time.Now()
 		if !shouldIncrementBasedOnMidnight(lastUpdated, now, timezone) {
-			return "skip", currentCount
+			return actionSkip, currentCount
 		}
 	}
 
 	// Default action is increment
-	return "increment", currentCount + 1
+	return actionIncrement, currentCount + 1
 }
 
 // Process task logic without side effects - returns new content, description, and whether to update
@@ -522,7 +566,7 @@ func processTaskLogic(task Task, isRecurring bool, daysSinceCompletion int, time
 	// Determine what action to take
 	action, newCount := determineTaskAction(task, count, isRecurring, daysSinceCompletion, lastUpdated, timezone)
 
-	if action == "skip" {
+	if action == actionSkip {
 		return task.Content, task.Description, false
 	}
 
