@@ -329,12 +329,14 @@ func TestGetActiveTasks(t *testing.T) {
 				Content:     "2)) Test task",
 				Description: "[auto: lastUpdated=2023-01-01T10:00:00Z]",
 				Labels:      []string{"autoage"},
+				ParentID:    nil,
 			},
 			{
 				ID:          "456",
 				Content:     "Regular task",
 				Description: "",
 				Labels:      []string{},
+				ParentID:    nil,
 			},
 		}
 		json.NewEncoder(w).Encode(mockTasks)
@@ -371,6 +373,80 @@ func TestGetActiveTasks(t *testing.T) {
 	if tasks[1].Content != "Regular task" {
 		t.Errorf("Second task Content = %v, want %v", tasks[1].Content, "Regular task")
 	}
+}
+
+// TestShouldProcessTask tests the shouldProcessTask function
+func TestShouldProcessTask(t *testing.T) {
+	// Create a helper function to generate string pointers
+	makeStringPtr := func(s string) *string {
+		return &s
+	}
+
+	tests := []struct {
+		name     string
+		task     Task
+		expected bool
+	}{
+		{
+			name: "Regular task with autoage label should be processed",
+			task: Task{
+				ID:       "1",
+				Labels:   []string{"autoage"},
+				ParentID: nil,
+			},
+			expected: true,
+		},
+		{
+			name: "Subtask with autoage label should NOT be processed",
+			task: Task{
+				ID:       "2",
+				Labels:   []string{"autoage"},
+				ParentID: makeStringPtr("parent-123"),
+			},
+			expected: false,
+		},
+		{
+			name: "Subtask without autoage label should NOT be processed",
+			task: Task{
+				ID:       "3",
+				Labels:   []string{},
+				ParentID: makeStringPtr("parent-456"),
+			},
+			expected: false,
+		},
+	}
+
+	// Save the original value to restore later
+	originalAutoAgeDefault := autoAgeByDefault
+	// Run tests with autoAgeByDefault = false
+	autoAgeByDefault = false
+	defer func() {
+		autoAgeByDefault = originalAutoAgeDefault
+	}()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldProcessTask(tt.task)
+			if got != tt.expected {
+				t.Errorf("shouldProcessTask() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+
+	// Run additional tests with autoAgeByDefault = true
+	autoAgeByDefault = true
+	// Special test for subtask with autoAgeByDefault = true
+	t.Run("Subtask with autoAgeByDefault true should NOT be processed", func(t *testing.T) {
+		task := Task{
+			ID:       "4",
+			Labels:   []string{},
+			ParentID: makeStringPtr("parent-789"),
+		}
+		got := shouldProcessTask(task)
+		if got != false {
+			t.Errorf("shouldProcessTask() = %v, want %v", got, false)
+		}
+	})
 }
 
 // TestValidateHTTPResponse tests the validateHTTPResponse function

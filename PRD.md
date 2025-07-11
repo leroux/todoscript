@@ -81,6 +81,7 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 - Increment parentheses count once per day maximum
 - Use timezone-aware day calculations
 - Skip tasks already updated on the same day
+- Do not apply aging to subtasks (tasks with a parent_id)
 
 ### Recurring Task Detection
 - Support tasks marked as recurring in Todoist

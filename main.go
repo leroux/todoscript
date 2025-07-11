@@ -86,6 +86,7 @@ type Task struct {
 	Labels      []string `json:"labels"`
 	IsCompleted bool     `json:"is_completed"`
 	Due         *DueDate `json:"due,omitempty"`
+	ParentID    *string  `json:"parent_id"` // Pointer to allow for null values
 }
 
 // DueDate represents a task's due date information
@@ -494,8 +495,14 @@ func processAllTasks() error {
 	return nil
 }
 
-// shouldProcessTask determines if a task should be processed based on auto-aging labels.
+// shouldProcessTask determines if a task should be processed based on auto-aging labels
+// and subtask status.
 func shouldProcessTask(task Task) bool {
+	// Skip subtasks (tasks with a parent_id)
+	if task.ParentID != nil {
+		return false
+	}
+	
 	hasNoAutoAgeLabel := false
 	hasAutoAgeLabel := false
 
