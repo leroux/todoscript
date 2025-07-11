@@ -7,7 +7,7 @@
 //
 // How it works:
 // - Tasks with pattern "2) Do something" become "2)) Do something" after midnight
-// - Recurring tasks reset their age when completed: "5))))) Task" → "3))) Task" 
+// - Recurring tasks reset their age when completed: "5))))) Task" → "3))) Task"
 // - Tasks can opt-in with @autoage label or opt-out with @no-autoage label
 // - Dry-run mode available for testing changes before applying them
 //
@@ -96,9 +96,9 @@ type DueDate struct {
 
 // TaskAgeInfo represents the result of parsing age markers from a task
 type TaskAgeInfo struct {
-	AgeCount         int    // Number of age markers (parentheses)
+	AgeCount          int    // Number of age markers (parentheses)
 	ContentWithoutAge string // Task content with age markers removed
-	HasAgeMarkers    bool   // Whether the task has age markers
+	HasAgeMarkers     bool   // Whether the task has age markers
 }
 
 // TaskUpdateInfo represents the result of calculating a task update
@@ -116,10 +116,10 @@ type UpdateAction struct {
 
 // TaskContext contains all the information needed to process a task
 type TaskContext struct {
-	Task                 Task
-	IsRecurring          bool
-	DaysSinceCompletion  int
-	Timezone             *time.Location
+	Task                Task
+	IsRecurring         bool
+	DaysSinceCompletion int
+	Timezone            *time.Location
 }
 
 // ActivityResponse represents the response from Todoist's activity API
@@ -139,14 +139,14 @@ var (
 	dryRun           bool
 	verbose          bool
 	autoAgeByDefault bool
-	tasksByContent    map[string][]Task // Maps task content to tasks for duplicate detection
+	tasksByContent   map[string][]Task // Maps task content to tasks for duplicate detection
 	logger           *log.Logger
 	timezone         *time.Location
 	// Pre-compiled regex patterns for task aging
 	// taskAgePattern matches tasks with age markers: "3))) Do something"
 	// Groups: (1) optional number, (2) parentheses markers, (3) remaining content
 	taskAgePattern = regexp.MustCompile(`^(\d*)([` + taskAgingMarker + `]+)(.*)$`)
-	
+
 	// metadataPattern matches our auto-generated metadata in task descriptions
 	// Matches: "[auto: lastUpdated=2023-12-25T10:30:00Z]"
 	metadataPattern = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
@@ -590,9 +590,9 @@ func extractTaskAgingInfo(content string) TaskAgeInfo {
 
 	if len(matches) != 4 {
 		return TaskAgeInfo{
-			AgeCount:         0,
+			AgeCount:          0,
 			ContentWithoutAge: content,
-			HasAgeMarkers:    false,
+			HasAgeMarkers:     false,
 		}
 	}
 
@@ -605,15 +605,15 @@ func extractTaskAgingInfo(content string) TaskAgeInfo {
 	taskContent := matches[3]
 
 	ageCount := len(ageMarkers)
+	// Preserve spaces in content as expected by tests
 	contentWithoutAge := numberPrefix + taskContent
 
 	return TaskAgeInfo{
-		AgeCount:         ageCount,
+		AgeCount:          ageCount,
 		ContentWithoutAge: contentWithoutAge,
-		HasAgeMarkers:    true,
+		HasAgeMarkers:     true,
 	}
 }
-
 
 // Update task content with new parentheses count
 // addAgingMarkersToContent adds the specified number of parentheses age markers to task content.
@@ -636,6 +636,11 @@ func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 	// Create string with the specified number of parentheses
 	ageMarkers := strings.Repeat(taskAgingMarker, count)
 
+	// Ensure there's a space between the parentheses and the remaining content
+	if count > 0 && !strings.HasPrefix(remainingContent, " ") {
+		remainingContent = " " + remainingContent
+	}
+
 	return numberPrefix + ageMarkers + remainingContent
 }
 
@@ -643,6 +648,13 @@ func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time) UpdateAction {
 	// Check for reset conditions first
 	if ctx.IsRecurring && ctx.DaysSinceCompletion >= 0 {
+		// For tasks completed today (DaysSinceCompletion == 0), reset completely (no parentheses)
+		if ctx.DaysSinceCompletion == 0 {
+			return UpdateAction{
+				Action:   actionReset,
+				NewCount: 0,
+			}
+		}
 		return UpdateAction{
 			Action:   actionReset,
 			NewCount: ctx.DaysSinceCompletion + 1,
@@ -671,7 +683,33 @@ func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time
 func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	// Extract current parentheses count
 	ageInfo := extractTaskAgingInfo(ctx.Task.Content)
+
+	// For tasks without age markers, we need to check if this is a first-time task
+	// or a task that needs its first marker
 	if !ageInfo.HasAgeMarkers {
+		// Check if metadata exists
+		lastUpdated := extractMetadataTimestamp(ctx.Task.Description)
+		if lastUpdated.IsZero() {
+			// First time task, add metadata but don't change content
+			now := time.Now().In(ctx.Timezone)
+			newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+			return TaskUpdateInfo{
+				NewContent:     ctx.Task.Content,
+				NewDescription: newDescription,
+				ShouldUpdate:   true,
+			}
+		} else if shouldIncrementBasedOnMidnight(lastUpdated, time.Now(), ctx.Timezone) {
+			// Task has metadata but no markers yet - add first marker
+			newContent := ") " + ctx.Task.Content
+			now := time.Now().In(ctx.Timezone)
+			newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+			return TaskUpdateInfo{
+				NewContent:     newContent,
+				NewDescription: newDescription,
+				ShouldUpdate:   true,
+			}
+		}
+
 		return TaskUpdateInfo{
 			NewContent:     ctx.Task.Content,
 			NewDescription: ctx.Task.Description,
@@ -690,6 +728,18 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 			NewContent:     ctx.Task.Content,
 			NewDescription: ctx.Task.Description,
 			ShouldUpdate:   false,
+		}
+	}
+
+	// Special handling for reset action (for recurring tasks)
+	if updateAction.Action == actionReset && ctx.DaysSinceCompletion == 0 {
+		// Complete reset - no parentheses for tasks completed today
+		now := time.Now().In(ctx.Timezone)
+		newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+		return TaskUpdateInfo{
+			NewContent:     strings.TrimSpace(ageInfo.ContentWithoutAge), // Strip leading/trailing spaces
+			NewDescription: newDescription,
+			ShouldUpdate:   true,
 		}
 	}
 

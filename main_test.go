@@ -57,15 +57,15 @@ func TestExtractTaskAgingInfo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractTaskAgingInfo(tt.input)
-			
+
 			if got.AgeCount != tt.wantAgeCount {
 				t.Errorf("extractTaskAgingInfo() AgeCount = %v, want %v", got.AgeCount, tt.wantAgeCount)
 			}
-			
+
 			if got.ContentWithoutAge != tt.wantContent {
 				t.Errorf("extractTaskAgingInfo() ContentWithoutAge = %v, want %v", got.ContentWithoutAge, tt.wantContent)
 			}
-			
+
 			if got.HasAgeMarkers != tt.wantHasMarkers {
 				t.Errorf("extractTaskAgingInfo() HasAgeMarkers = %v, want %v", got.HasAgeMarkers, tt.wantHasMarkers)
 			}
@@ -76,28 +76,28 @@ func TestExtractTaskAgingInfo(t *testing.T) {
 // TestAddAgingMarkersToContent tests the addAgingMarkersToContent function
 func TestAddAgingMarkersToContent(t *testing.T) {
 	tests := []struct {
-		name             string
+		name              string
 		contentWithoutAge string
-		count            int
-		want             string
+		count             int
+		want              string
 	}{
 		{
-			name:             "Add markers to task with number",
+			name:              "Add markers to task with number",
 			contentWithoutAge: "3 Do something",
-			count:            4,
-			want:             "3)))) Do something",
+			count:             4,
+			want:              "3)))) Do something",
 		},
 		{
-			name:             "Add markers to task without number",
+			name:              "Add markers to task without number",
 			contentWithoutAge: "Do something",
-			count:            2,
-			want:             "))Do something",
+			count:             2,
+			want:              ")) Do something",
 		},
 		{
-			name:             "Add zero markers",
+			name:              "Add zero markers",
 			contentWithoutAge: "3 Task",
-			count:            0,
-			want:             "3 Task",
+			count:             0,
+			want:              "3 Task",
 		},
 	}
 
@@ -114,37 +114,145 @@ func TestAddAgingMarkersToContent(t *testing.T) {
 // TestDecideUpdateAction_Reset tests the reset action of decideUpdateAction
 func TestDecideUpdateAction_Reset(t *testing.T) {
 	tz, _ := time.LoadLocation("UTC")
-	
+
 	// Test case for reset due to recurring task
 	ctx := TaskContext{
 		IsRecurring:         true,
 		DaysSinceCompletion: 3,
 		Timezone:            tz,
 	}
-	
+
 	got := decideUpdateAction(5, ctx, time.Time{})
-	
+
 	// Verify reset behavior
 	if got.Action != actionReset {
 		t.Errorf("Expected action %s, got %s", actionReset, got.Action)
 	}
-	
+
 	if got.NewCount != 4 { // daysSinceCompletion + 1
 		t.Errorf("Expected new count 4, got %d", got.NewCount)
 	}
 }
 
-// We'll skip testing the increment and skip actions since they depend on 
+// We'll skip testing the increment and skip actions since they depend on
 // shouldIncrementBasedOnMidnight which is already tested separately
+
+// TestTaskAgingMinimalCases tests the core task aging scenarios
+func TestTaskAgingMinimalCases(t *testing.T) {
+	// Setup timezone for testing
+	tz, _ := time.LoadLocation("UTC")
+	now := time.Now().In(tz)
+	yesterday := now.Add(-24 * time.Hour)
+
+	tests := []struct {
+		name                 string
+		task                 Task
+		isRecurring          bool
+		daysSinceCompletion  int
+		expectedContent      string
+		expectedShouldUpdate bool
+	}{
+		{
+			name: "First-time task - adds metadata only",
+			task: Task{
+				ID:          "1",
+				Content:     "Task name",
+				Description: "", // No metadata
+				Labels:      []string{"autoage"},
+			},
+			isRecurring:          false,
+			daysSinceCompletion:  -1,
+			expectedContent:      "Task name", // No visual change
+			expectedShouldUpdate: true,        // Should update to add metadata
+		},
+		{
+			name: "Day 2 task - adds first parenthesis",
+			task: Task{
+				ID:          "2",
+				Content:     "Task name",
+				Description: "[auto: lastUpdated=" + yesterday.Format(time.RFC3339) + "]", // From yesterday
+				Labels:      []string{"autoage"},
+			},
+			isRecurring:          false,
+			daysSinceCompletion:  -1,
+			expectedContent:      ") Task name", // First parenthesis added
+			expectedShouldUpdate: true,
+		},
+		{
+			name: "Existing markers - increments count",
+			task: Task{
+				ID:          "3",
+				Content:     ")) Task name",
+				Description: "[auto: lastUpdated=" + yesterday.Format(time.RFC3339) + "]", // From yesterday
+				Labels:      []string{"autoage"},
+			},
+			isRecurring:          false,
+			daysSinceCompletion:  -1,
+			expectedContent:      "))) Task name", // Increment marker count
+			expectedShouldUpdate: true,
+		},
+		{
+			name: "Recurring task reset - completed today",
+			task: Task{
+				ID:          "4",
+				Content:     "))))) Task name",
+				Description: "[auto: lastUpdated=" + yesterday.Format(time.RFC3339) + "]", // From yesterday
+				Labels:      []string{"autoage"},
+			},
+			isRecurring:          true,
+			daysSinceCompletion:  0,           // Completed today
+			expectedContent:      "Task name", // Reset to 0 parentheses
+			expectedShouldUpdate: true,
+		},
+		{
+			name: "Spacing fix - adds proper spacing",
+			task: Task{
+				ID:          "5",
+				Content:     ")))Task name",                                               // No space after parentheses
+				Description: "[auto: lastUpdated=" + yesterday.Format(time.RFC3339) + "]", // From yesterday
+				Labels:      []string{"autoage"},
+			},
+			isRecurring:          false,
+			daysSinceCompletion:  -1,
+			expectedContent:      ")))) Task name", // Fixed spacing
+			expectedShouldUpdate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create context for the test
+			ctx := TaskContext{
+				Task:                tt.task,
+				IsRecurring:         tt.isRecurring,
+				DaysSinceCompletion: tt.daysSinceCompletion,
+				Timezone:            tz,
+			}
+
+			// Call the function being tested
+			result := calculateTaskUpdate(ctx)
+
+			// Check if update is required as expected
+			if result.ShouldUpdate != tt.expectedShouldUpdate {
+				t.Errorf("Expected ShouldUpdate=%v, got %v", tt.expectedShouldUpdate, result.ShouldUpdate)
+			}
+
+			// If update is required, check the new content matches expected
+			if result.ShouldUpdate && result.NewContent != tt.expectedContent {
+				t.Errorf("Expected content=%q, got %q", tt.expectedContent, result.NewContent)
+			}
+		})
+	}
+}
 
 // TestShouldIncrementBasedOnMidnight tests the shouldIncrementBasedOnMidnight function
 func TestShouldIncrementBasedOnMidnight(t *testing.T) {
 	// Set up timezone for consistent test results
 	tz, _ := time.LoadLocation("UTC")
-	
+
 	// Base time: 2023-01-01 12:00:00 UTC
 	baseTime := time.Date(2023, 1, 1, 12, 0, 0, 0, tz)
-	
+
 	tests := []struct {
 		name        string
 		lastUpdated time.Time
@@ -154,34 +262,34 @@ func TestShouldIncrementBasedOnMidnight(t *testing.T) {
 	}{
 		{
 			name:        "Should increment when past midnight",
-			lastUpdated: baseTime,                                       // 2023-01-01 12:00:00
-			now:         baseTime.Add(24 * time.Hour),                   // 2023-01-02 12:00:00
+			lastUpdated: baseTime,                     // 2023-01-01 12:00:00
+			now:         baseTime.Add(24 * time.Hour), // 2023-01-02 12:00:00
 			timezone:    tz,
 			want:        true,
 		},
 		{
 			name:        "Should not increment when same day",
-			lastUpdated: baseTime,                                       // 2023-01-01 12:00:00
-			now:         baseTime.Add(6 * time.Hour),                    // 2023-01-01 18:00:00
+			lastUpdated: baseTime,                    // 2023-01-01 12:00:00
+			now:         baseTime.Add(6 * time.Hour), // 2023-01-01 18:00:00
 			timezone:    tz,
 			want:        false,
 		},
 		{
 			name:        "Should increment when exactly midnight",
-			lastUpdated: baseTime,                                       // 2023-01-01 12:00:00
-			now:         time.Date(2023, 1, 2, 0, 0, 0, 0, tz),          // 2023-01-02 00:00:00
+			lastUpdated: baseTime,                              // 2023-01-01 12:00:00
+			now:         time.Date(2023, 1, 2, 0, 0, 0, 0, tz), // 2023-01-02 00:00:00
 			timezone:    tz,
 			want:        true,
 		},
 		{
 			name:        "Should increment when multiple days passed",
-			lastUpdated: baseTime,                                       // 2023-01-01 12:00:00
-			now:         baseTime.Add(72 * time.Hour),                   // 2023-01-04 12:00:00
+			lastUpdated: baseTime,                     // 2023-01-01 12:00:00
+			now:         baseTime.Add(72 * time.Hour), // 2023-01-04 12:00:00
 			timezone:    tz,
 			want:        true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := shouldIncrementBasedOnMidnight(tt.lastUpdated, tt.now, tt.timezone)
@@ -201,7 +309,7 @@ func TestGetActiveTasks(t *testing.T) {
 		apiURL = originalAPIURL
 		apiToken = originalAPIToken
 	}()
-	
+
 	// Setup mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify request
@@ -211,35 +319,35 @@ func TestGetActiveTasks(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("Expected Authorization header %q, got %q", "Bearer test-token", r.Header.Get("Authorization"))
 		}
-		
+
 		// Return mock response
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		mockTasks := []Task{
 			{
-				ID:       "123",
-				Content:  "2)) Test task",
+				ID:          "123",
+				Content:     "2)) Test task",
 				Description: "[auto: lastUpdated=2023-01-01T10:00:00Z]",
-				Labels:   []string{"autoage"},
+				Labels:      []string{"autoage"},
 			},
 			{
-				ID:       "456",
-				Content:  "Regular task",
+				ID:          "456",
+				Content:     "Regular task",
 				Description: "",
-				Labels:   []string{},
+				Labels:      []string{},
 			},
 		}
 		json.NewEncoder(w).Encode(mockTasks)
 	}))
 	defer server.Close()
-	
+
 	// Override API URL and token for testing
 	apiURL = server.URL
 	apiToken = "test-token"
-	
+
 	// Call function under test
 	tasks, err := getActiveTasks()
-	
+
 	// Verify results
 	if err != nil {
 		t.Errorf("getActiveTasks() error = %v", err)
@@ -247,7 +355,7 @@ func TestGetActiveTasks(t *testing.T) {
 	if len(tasks) != 2 {
 		t.Errorf("getActiveTasks() returned %d tasks, expected 2", len(tasks))
 	}
-	
+
 	// Check first task
 	if tasks[0].ID != "123" {
 		t.Errorf("First task ID = %v, want %v", tasks[0].ID, "123")
@@ -255,7 +363,7 @@ func TestGetActiveTasks(t *testing.T) {
 	if tasks[0].Content != "2)) Test task" {
 		t.Errorf("First task Content = %v, want %v", tasks[0].Content, "2)) Test task")
 	}
-	
+
 	// Check second task
 	if tasks[1].ID != "456" {
 		t.Errorf("Second task ID = %v, want %v", tasks[1].ID, "456")
@@ -288,16 +396,16 @@ func TestValidateHTTPResponse(t *testing.T) {
 			wantErr:    true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp := &http.Response{
 				StatusCode: tt.statusCode,
 				Status:     http.StatusText(tt.statusCode),
 			}
-			
+
 			err := validateHTTPResponse(resp)
-			
+
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateHTTPResponse() error = %v, wantErr %v", err, tt.wantErr)
 			}

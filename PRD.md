@@ -11,10 +11,22 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 **Requirement**: Automatically track and visually indicate how long tasks have been pending.
 
 **Implementation**: 
-- Tasks must follow a specific format with parentheses as staleness indicators
-- Format: `[number])[content]` (e.g., "10) Review quarterly reports")
-- Each day a task remains incomplete, add one parenthesis: `10) → 10)) → 10)))`
-- The parentheses count represents days of staleness
+- Tasks have parentheses as staleness indicators, always at the beginning of the task
+- Format: `[parentheses][content]` (e.g., ") Review quarterly reports")
+- On Day 1, tasks have 0 parentheses: `Task name`
+- Each additional day a task remains incomplete, add one parenthesis: `Task name → ) Task name → )) Task name`
+- The parentheses count represents days of staleness minus one (e.g., 0 parentheses = day 1, 1 parenthesis = day 2)
+
+**Task Aging Table**:
+
+| Day | Parentheses Count | Example            |
+|-----|------------------|--------------------|
+| 1   | 0                | Task name          |
+| 2   | 1                | ) Task name        |
+| 3   | 2                | )) Task name       |
+| 4   | 3                | ))) Task name      |
+| 5   | 4                | )))) Task name     |
+| 10  | 9                | ))))))))) Task name|
 
 ### Recurring Task Reset
 
@@ -22,9 +34,17 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 
 **Implementation**:
 - When a recurring task is completed, reset parentheses to reflect days since completion
-- If completed today, reset to 1 parenthesis
-- If completed 3 days ago, reset to 4 parentheses (3 days + 1)
+- If completed today, reset to 0 parentheses (day 1)
+- If completed 3 days ago, reset to 3 parentheses (day 4)
 - This handles cases where the script runs after task completion
+
+**Recurring Task Reset Example**:
+
+| Completion Status | Days Since Completion | Parentheses Count | Example        |
+|------------------|---------------------|------------------|----------------|
+| Completed today  | 0                   | 0                | Task name      |
+| Completed yesterday | 1                | 1                | ) Task name    |
+| Completed 3 days ago | 3               | 3                | ))) Task name  |
 
 ### Task Selection
 
@@ -51,9 +71,11 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 ## Task Processing Rules
 
 ### Task Format Requirements
-- Tasks must contain closing parentheses `)` to be processed
-- Optional leading number is preserved during updates
-- Pattern: `[optional-number][parentheses][task-content]`
+- On day 1, tasks have no parentheses
+- From day 2 onward, closing parentheses `)` are added at the start of the task
+- One space must follow the last parenthesis to separate it from the task content
+- Pattern: `[parentheses][space][task-content]` (e.g., `)) Task content`)
+- Spaces will be automatically normalized during processing
 
 ### Staleness Increment Rules
 - Increment parentheses count once per day maximum
@@ -66,9 +88,11 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 - Query completion history for recurring tasks
 
 ### Content Preservation
-- Preserve task content except for parentheses count
+- Preserve task content except for parentheses count and required spacing
+- Always maintain one space after the last parenthesis for readability
 - Maintain task description and other metadata
-- Store processing metadata for day calculation
+- Store processing metadata for day calculation in task description
+- Fix any inconsistent spacing during processing
 
 ## System Behavior
 
@@ -77,10 +101,15 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 2. Fetch all active tasks
 3. Filter tasks based on selection criteria
 4. Process each eligible task:
-   - Check if task follows required format
-   - Determine if task is recurring
-   - Calculate appropriate staleness count
-   - Update task if needed
+   - For tasks with no age markers (first-time processing):
+     - Add metadata but don't change visual appearance
+     - Start tracking for future aging
+   - For tasks with existing age markers or previously tracked tasks:
+     - Determine if task is recurring
+     - Calculate appropriate staleness count
+     - Update task with correct parentheses count
+     - Ensure proper spacing after parentheses
+   - Fix any formatting inconsistencies
 5. Report processing results
 
 ### Error Handling
@@ -207,6 +236,5 @@ Todoscript is a task automation tool that provides visual staleness tracking for
 
 ### Assumptions
 - Users have basic command-line familiarity
-- Tasks follow the required parentheses format
 - Daily execution frequency is sufficient
 - Todoist API availability and stability
