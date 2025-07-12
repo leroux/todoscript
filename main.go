@@ -682,25 +682,34 @@ func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 }
 
 // decideUpdateAction determines what action to take on a task based on its current state.
-func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time) UpdateAction {
+func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time, now time.Time) UpdateAction {
 	// Check for reset conditions first
 	if ctx.IsRecurring && ctx.DaysSinceCompletion >= 0 {
-		// For tasks completed today (DaysSinceCompletion == 0), reset completely (no parentheses)
+		// Calculate expected count based on days since completion
+		var expectedCount int
 		if ctx.DaysSinceCompletion == 0 {
+			expectedCount = 0 // Tasks completed today should have no parentheses
+		} else {
+			expectedCount = ctx.DaysSinceCompletion + 1
+		}
+		
+		// Only reset if current count doesn't match expected count
+		if currentCount != expectedCount {
 			return UpdateAction{
 				Action:   actionReset,
-				NewCount: 0,
+				NewCount: expectedCount,
 			}
 		}
+		
+		// Count matches, no reset needed
 		return UpdateAction{
-			Action:   actionReset,
-			NewCount: ctx.DaysSinceCompletion + 1,
+			Action:   actionSkip,
+			NewCount: currentCount,
 		}
 	}
 
 	// Check if increment is needed based on midnight rule
 	if !lastUpdated.IsZero() {
-		now := time.Now()
 		if !shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
 			return UpdateAction{
 				Action:   actionSkip,
@@ -729,7 +738,7 @@ func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time
 }
 
 // calculateTaskUpdate determines the new content and description for a task based on aging rules.
-func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
+func calculateTaskUpdate(ctx TaskContext, now time.Time) TaskUpdateInfo {
 	// Extract current parentheses count
 	ageInfo := extractTaskAgingInfo(ctx.Task.Content)
 
@@ -740,18 +749,18 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 		lastUpdated := extractMetadataTimestamp(ctx.Task.Description)
 		if lastUpdated.IsZero() {
 			// First time task, add metadata but don't change content
-			now := time.Now().In(ctx.Timezone)
-			newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+			nowInTZ := now.In(ctx.Timezone)
+			newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
 			return TaskUpdateInfo{
 				NewContent:     ctx.Task.Content,
 				NewDescription: newDescription,
 				ShouldUpdate:   true,
 			}
-		} else if shouldIncrementBasedOnMidnight(lastUpdated, time.Now(), ctx.Timezone) {
+		} else if shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
 			// Task has metadata but no markers yet - add first marker
 			newContent := ") " + ctx.Task.Content
-			now := time.Now().In(ctx.Timezone)
-			newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+			nowInTZ := now.In(ctx.Timezone)
+			newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
 			return TaskUpdateInfo{
 				NewContent:     newContent,
 				NewDescription: newDescription,
@@ -770,7 +779,7 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	lastUpdated := extractMetadataTimestamp(ctx.Task.Description)
 
 	// Determine what action to take
-	updateAction := decideUpdateAction(ageInfo.AgeCount, ctx, lastUpdated)
+	updateAction := decideUpdateAction(ageInfo.AgeCount, ctx, lastUpdated, now)
 
 	if updateAction.Action == actionSkip {
 		return TaskUpdateInfo{
@@ -783,8 +792,8 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	// Special handling for reset action (for recurring tasks)
 	if updateAction.Action == actionReset && ctx.DaysSinceCompletion == 0 {
 		// Complete reset - no parentheses for tasks completed today
-		now := time.Now().In(ctx.Timezone)
-		newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+		nowInTZ := now.In(ctx.Timezone)
+		newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
 		return TaskUpdateInfo{
 			NewContent:     strings.TrimSpace(ageInfo.ContentWithoutAge), // Strip leading/trailing spaces
 			NewDescription: newDescription,
@@ -805,8 +814,8 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 	}
 
 	// Update metadata with current time
-	now := time.Now().In(ctx.Timezone)
-	newDescription := updateDescriptionWithMetadata(ctx.Task.Description, now)
+	nowInTZ := now.In(ctx.Timezone)
+	newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
 
 	return TaskUpdateInfo{
 		NewContent:     newContent,
@@ -817,12 +826,6 @@ func calculateTaskUpdate(ctx TaskContext) TaskUpdateInfo {
 
 // processTask processes a single task for aging and updates it if needed.
 func processTask(task Task) error {
-	// Check if task has parentheses pattern
-	ageInfo := extractTaskAgingInfo(task.Content)
-	if !ageInfo.HasAgeMarkers {
-		logger.Printf("Skipping task %s (no parentheses pattern found)", task.ID)
-		return nil
-	}
 
 	// Determine task characteristics
 	isRecurring := isRecurringTask(task)
@@ -831,10 +834,6 @@ func processTask(task Task) error {
 	// For recurring tasks, check completion status
 	if isRecurring {
 		daysSinceCompletion = getDaysSinceCompletion(task.ID)
-		if daysSinceCompletion >= 0 {
-			logger.Printf("Task %s was completed %d days ago, will reset parentheses count to %d.",
-				task.ID, daysSinceCompletion, daysSinceCompletion+1)
-		}
 	}
 
 	// Use pure function to determine what to do
@@ -844,19 +843,46 @@ func processTask(task Task) error {
 		DaysSinceCompletion: daysSinceCompletion,
 		Timezone:            timezone,
 	}
-	updateInfo := calculateTaskUpdate(ctx)
+	updateInfo := calculateTaskUpdate(ctx, time.Now())
 
 	if !updateInfo.ShouldUpdate {
 		logger.Printf("No change needed for task %s, skipping update", task.ID)
 		return nil
 	}
 
-	// Log what we're doing
-	if daysSinceCompletion >= 0 {
-		logger.Printf("Resetting task %s: \"%s\" -> \"%s\"", task.ID, task.Content, updateInfo.NewContent)
+	// Log what we're doing based on the specific action
+	ageInfoForLog := extractTaskAgingInfo(task.Content)
+	lastUpdatedForLog := extractMetadataTimestamp(task.Description)
+	
+	// Determine the action type for logging
+	var actionType string
+	if !ageInfoForLog.HasAgeMarkers && lastUpdatedForLog.IsZero() {
+		actionType = "first-time processing"
+	} else if !ageInfoForLog.HasAgeMarkers && !lastUpdatedForLog.IsZero() {
+		actionType = "adding first parenthesis"
 	} else {
-		logger.Printf("Incrementing task %s: \"%s\" -> \"%s\"", task.ID, task.Content, updateInfo.NewContent)
+		updateAction := decideUpdateAction(ageInfoForLog.AgeCount, ctx, lastUpdatedForLog, time.Now())
+		switch updateAction.Action {
+		case actionReset:
+			if daysSinceCompletion >= 0 {
+				actionType = fmt.Sprintf("resetting recurring task (completed %d days ago)", daysSinceCompletion)
+			} else {
+				actionType = "resetting task"
+			}
+		case actionIncrement:
+			actionType = "incrementing task"
+		default:
+			actionType = "updating task"
+		}
 	}
+	
+	// Capitalize first letter of action type for logging
+	if len(actionType) > 0 {
+		actionType = strings.ToUpper(actionType[:1]) + actionType[1:]
+	}
+	
+	logger.Printf("%s %s: \"%s\" -> \"%s\"", 
+		actionType, task.ID, task.Content, updateInfo.NewContent)
 
 	// Handle dry run mode
 	if dryRun {
