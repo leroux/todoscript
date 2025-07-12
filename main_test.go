@@ -202,13 +202,9 @@ func TestHTTPFunctionality(t *testing.T) {
 		}))
 		defer server.Close()
 		
-		// Override API URL for testing
-		originalURL := apiURL
-		apiURL = server.URL
-		defer func() { apiURL = originalURL }()
-		
 		// Test
-		tasks, err := getActiveTasks()
+		config := &Config{APIURL: server.URL}
+		tasks, err := getActiveTasks(config)
 		if err != nil {
 			t.Errorf("getActiveTasks() error = %v", err)
 		}
@@ -265,11 +261,9 @@ func TestTaskFiltering(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			originalAutoAge := autoAgeByDefault
-			autoAgeByDefault = tt.autoAge
-			defer func() { autoAgeByDefault = originalAutoAge }()
+			config := &Config{AutoAgeByDefault: tt.autoAge}
 			
-			result := shouldProcessTask(tt.task)
+			result := shouldProcessTask(tt.task, config)
 			if result != tt.wantProcess {
 				t.Errorf("shouldProcessTask() = %v, want %v", result, tt.wantProcess)
 			}
