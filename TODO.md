@@ -1,6 +1,0 @@
-- [ ] fix global state issue? is there one?
-- [ ] separation of concerns refactor
-- [ ] improve testing without sacrificing simplicity of the code. I don't like DI.
-- [ ] tight coupling is fine for a small codebase.
-- [ ] fix error handling
-- [ ] create testing todoist account 

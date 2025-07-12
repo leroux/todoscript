@@ -1,6 +1,6 @@
 - Make sure code builds and tests pass.
 - Use test-driven development for changes.
-- Keep all application code in a single file
+- Application code is organized in logical modules (types.go, config.go, todoist.go, aging.go, processing.go, main.go)
 - Play devil's advocate. Push back on my requests if there is evidence to do something else.
 - You can do scratch work in the `scratch` directory which is gitignored. Please create a new directory under scratch for thinking through and experimenting for different topics.
 - Prefer writing pure functions when possible and designing the code to follow "Functional Core, Imperative Shell" from 
