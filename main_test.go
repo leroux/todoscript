@@ -19,9 +19,9 @@ func TestExtractTaskAgingInfo(t *testing.T) {
 	}{
 		{
 			name:           "Simple task with markers",
-			input:          "2)) Do something",
+			input:          ")) Do something",
 			wantAgeCount:   2,
-			wantContent:    "2 Do something",
+			wantContent:    " Do something",
 			wantHasMarkers: true,
 		},
 		{
@@ -33,9 +33,9 @@ func TestExtractTaskAgingInfo(t *testing.T) {
 		},
 		{
 			name:           "Task with many markers",
-			input:          "3))))) Complete this",
+			input:          "))))) Complete this",
 			wantAgeCount:   5,
-			wantContent:    "3 Complete this",
+			wantContent:    " Complete this",
 			wantHasMarkers: true,
 		},
 		{
@@ -83,9 +83,9 @@ func TestAddAgingMarkersToContent(t *testing.T) {
 	}{
 		{
 			name:              "Add markers to task with number",
-			contentWithoutAge: "3 Do something",
+			contentWithoutAge: " Do something",
 			count:             4,
-			want:              "3)))) Do something",
+			want:              ")))) Do something",
 		},
 		{
 			name:              "Add markers to task without number",
@@ -95,9 +95,9 @@ func TestAddAgingMarkersToContent(t *testing.T) {
 		},
 		{
 			name:              "Add zero markers",
-			contentWithoutAge: "3 Task",
+			contentWithoutAge: " Task",
 			count:             0,
-			want:              "3 Task",
+			want:              " Task",
 		},
 	}
 
@@ -503,7 +503,7 @@ func TestGetActiveTasks(t *testing.T) {
 		mockTasks := []Task{
 			{
 				ID:          "123",
-				Content:     "2)) Test task",
+				Content:     ")) Test task",
 				Description: "[auto: lastUpdated=2023-01-01T10:00:00Z]",
 				Labels:      []string{"autoage"},
 				ParentID:    nil,
@@ -539,8 +539,8 @@ func TestGetActiveTasks(t *testing.T) {
 	if tasks[0].ID != "123" {
 		t.Errorf("First task ID = %v, want %v", tasks[0].ID, "123")
 	}
-	if tasks[0].Content != "2)) Test task" {
-		t.Errorf("First task Content = %v, want %v", tasks[0].Content, "2)) Test task")
+	if tasks[0].Content != ")) Test task" {
+		t.Errorf("First task Content = %v, want %v", tasks[0].Content, ")) Test task")
 	}
 
 	// Check second task

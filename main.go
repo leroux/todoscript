@@ -6,8 +6,8 @@
 // to either complete them or remove them.
 //
 // How it works:
-// - Tasks with pattern "2) Do something" become "2)) Do something" after midnight
-// - Recurring tasks reset their age when completed: "5))))) Task" → "3))) Task"
+// - Tasks with pattern ") Do something" become ")) Do something" after midnight
+// - Recurring tasks reset their age when completed: "))))) Task" → "))) Task"
 // - Tasks can opt-in with @autoage label or opt-out with @no-autoage label
 // - Dry-run mode available for testing changes before applying them
 //
@@ -144,7 +144,7 @@ var (
 	logger           *log.Logger
 	timezone         *time.Location
 	// Pre-compiled regex patterns for task aging
-	// taskAgePattern matches tasks with age markers: "3))) Do something"
+	// taskAgePattern matches tasks with age markers: "))) Do something"
 	// Groups: (1) optional number, (2) parentheses markers, (3) remaining content
 	taskAgePattern = regexp.MustCompile(`^(\d*)([` + taskAgingMarker + `]+)(.*)$`)
 
@@ -583,7 +583,7 @@ func buildTaskMap(tasks []Task) {
 // ============================================================================
 
 // extractTaskAgingInfo extracts the age count from a task's parentheses markers.
-// Example: "3))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: "3 Do something", HasAgeMarkers: true}
+// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}
 // extractMetadataTimestamp extracts the last updated timestamp from task description metadata.
 func extractMetadataTimestamp(description string) time.Time {
 	var lastUpdated time.Time
@@ -620,7 +620,7 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 }
 
 // extractTaskAgingInfo extracts the age count from a task's parentheses markers.
-// Example: "3))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: "3 Do something", HasAgeMarkers: true}
+// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}
 func extractTaskAgingInfo(content string) TaskAgeInfo {
 	// Use pre-compiled regex pattern
 	matches := taskAgePattern.FindStringSubmatch(content)
@@ -634,9 +634,9 @@ func extractTaskAgingInfo(content string) TaskAgeInfo {
 	}
 
 	// Extract components from regex groups
-	// Group 1: optional number prefix (e.g., "3" in "3))) task")
-	// Group 2: parentheses markers (e.g., ")))" in "3))) task")
-	// Group 3: remaining content (e.g., " task" in "3))) task")
+	// Group 1: optional number prefix (no longer used)
+	// Group 2: parentheses markers (e.g., ")))" in "))) task")
+	// Group 3: remaining content (e.g., " task" in "))) task")
 	numberPrefix := matches[1]
 	ageMarkers := matches[2]
 	taskContent := matches[3]
@@ -654,7 +654,7 @@ func extractTaskAgingInfo(content string) TaskAgeInfo {
 
 // Update task content with new parentheses count
 // addAgingMarkersToContent adds the specified number of parentheses age markers to task content.
-// Example: addAgingMarkersToContent("3 Do something", 4) → "3)))) Do something"
+// Example: addAgingMarkersToContent(" Do something", 4) → "))))) Do something"
 func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 	// Find the optional number in the content
 	matches := contentStartRegex.FindStringSubmatch(contentWithoutAge)
