@@ -17,6 +17,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,24 +32,19 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Constants
+// Constants for configuration and business logic.
 const (
-	// Task aging marker
-	taskAgingMarker = ")"
+	// Core business logic.
+	taskAgingMarker  = ")"
+	metadataTemplate = "[auto: lastUpdated=%s]"
 
-	// HTTP client configuration
+	// HTTP client configuration.
 	httpTimeoutSeconds     = 30
 	maxIdleConnections     = 10
 	maxIdleConnsPerHost    = 2
 	idleConnTimeoutSeconds = 90
 
-	// File permissions
-	logFilePermissions = 0666
-
-	// Time calculations
-	hoursPerDay = 24
-
-	// Environment variables
+	// Environment variables.
 	envLogFile        = "LOG_FILE"
 	envTodoistToken   = "TODOIST_TOKEN"
 	envDryRun         = "DRY_RUN"
@@ -56,59 +52,36 @@ const (
 	envAutoAgeDefault = "AUTOAGE_BY_DEFAULT"
 	envTimezone       = "TIMEZONE"
 
-	// Default values
+	// Default values.
 	defaultTimezone = "UTC"
 
-	// Task labels
+	// Task labels.
 	labelRecurring = "recurring"
 	labelNoAutoAge = "no-autoage"
 	labelAutoAge   = "autoage"
 
-	// Task actions
-	actionReset     = "reset"
-	actionSkip      = "skip"
-	actionIncrement = "increment"
-
-	// HTTP methods
-	httpMethodGet  = "GET"
-	httpMethodPost = "POST"
-
-	// JSON fields
-	jsonFieldContent     = "content"
-	jsonFieldDescription = "description"
-
-	// Time format
-	metadataTimeFormat = time.RFC3339
-
-	// HTTP headers
-	authHeaderPrefix = "Bearer "
-	contentTypeJSON  = "application/json"
-
-	// API URLs
+	// API URLs.
 	defaultAPIURL      = "https://api.todoist.com/rest/v2"
 	defaultActivityURL = "https://api.todoist.com/sync/v9/activity/get"
 
-	// API endpoints
+	// API endpoints.
 	apiEndpointTasks = "/tasks"
 	apiEndpointTask  = "/tasks/%s"
-
-	// Metadata template
-	metadataTemplate = "[auto: lastUpdated=%s]"
 )
 
-// Config holds all application configuration
+// Config holds all application configuration.
 type Config struct {
 	TodoistToken     string
-	APIURL          string
-	ActivityURL     string
-	DryRun          bool
-	Verbose         bool
+	APIURL           string
+	ActivityURL      string
+	DryRun           bool
+	Verbose          bool
 	AutoAgeByDefault bool
-	Timezone        *time.Location
-	Logger          *log.Logger
+	Timezone         *time.Location
+	Logger           *log.Logger
 }
 
-// Task represents a Todoist task
+// Task represents a Todoist task.
 type Task struct {
 	ID          string   `json:"id"`
 	Content     string   `json:"content"`
@@ -119,33 +92,33 @@ type Task struct {
 	ParentID    *string  `json:"parent_id"` // Pointer to allow for null values
 }
 
-// DueDate represents a task's due date information
+// DueDate represents a task's due date information.
 type DueDate struct {
 	Recurring bool   `json:"is_recurring"`
 	Date      string `json:"date,omitempty"`
 }
 
-// TaskAgeInfo represents the result of parsing age markers from a task
+// TaskAgeInfo represents the result of parsing age markers from a task.
 type TaskAgeInfo struct {
 	AgeCount          int    // Number of age markers (parentheses)
 	ContentWithoutAge string // Task content with age markers removed
 	HasAgeMarkers     bool   // Whether the task has age markers
 }
 
-// TaskUpdateInfo represents the result of calculating a task update
+// TaskUpdateInfo represents the result of calculating a task update.
 type TaskUpdateInfo struct {
 	NewContent     string // Updated task content
 	NewDescription string // Updated task description
 	ShouldUpdate   bool   // Whether the task should be updated
 }
 
-// UpdateAction represents the action to take on a task
+// UpdateAction represents the action to take on a task.
 type UpdateAction struct {
 	Action   string // "reset", "skip", or "increment"
 	NewCount int    // New age count after action
 }
 
-// TaskContext contains all the information needed to process a task
+// TaskContext contains all the information needed to process a task.
 type TaskContext struct {
 	Task                Task
 	IsRecurring         bool
@@ -153,7 +126,7 @@ type TaskContext struct {
 	Timezone            *time.Location
 }
 
-// ActivityResponse represents the response from Todoist's activity API
+// ActivityResponse represents the response from Todoist's activity API.
 type ActivityResponse struct {
 	Count  int `json:"count"`
 	Events []struct {
@@ -162,21 +135,21 @@ type ActivityResponse struct {
 	} `json:"events"`
 }
 
-// Global variables for compiled patterns and HTTP client
+// Global variables for compiled patterns and HTTP client.
 var (
 	// Pre-compiled regex patterns for task aging
 	// taskAgePattern matches tasks with age markers: "))) Do something"
-	// Groups: (1) optional number, (2) parentheses markers, (3) remaining content
+	// Groups: (1) optional number, (2) parentheses markers, (3) remaining content.
 	taskAgePattern = regexp.MustCompile(`^(\d*)([` + taskAgingMarker + `]+)(.*)$`)
 
 	// metadataPattern matches our auto-generated metadata in task descriptions
-	// Matches: "[auto: lastUpdated=2023-12-25T10:30:00Z]"
+	// Matches: "[auto: lastUpdated=2023-12-25T10:30:00Z]".
 	metadataPattern = regexp.MustCompile(`\[auto: lastUpdated=([^\]]+)\]`)
-	// contentStartRegex matches the optional number at the start of content
+	// contentStartRegex matches the optional number at the start of content.
 	contentStartRegex = regexp.MustCompile(`^(\d*)(.*)$`)
 
-	// Shared HTTP client for better performance
-	httpClient = &http.Client{
+	// Shared HTTP client for better performance.
+	httpClient = &http.Client{ //nolint:gochecknoglobals // HTTP client should be shared for connection pooling
 		Timeout: time.Second * httpTimeoutSeconds,
 		Transport: &http.Transport{
 			MaxIdleConns:        maxIdleConnections,
@@ -186,7 +159,7 @@ var (
 	}
 )
 
-// Main function
+// Main function.
 func main() {
 	// Load configuration
 	config, err := loadConfig()
@@ -201,22 +174,22 @@ func main() {
 	config.Logger.Printf("Starting task processing...")
 
 	// Process tasks
-	if err := processAllTasks(config); err != nil {
-		config.Logger.Fatalf("Failed to process tasks: %v", err)
+	if processErr := processAllTasks(config); processErr != nil {
+		config.Logger.Fatalf("Failed to process tasks: %v", processErr)
 	}
 
 	config.Logger.Printf("Task processing completed successfully")
 }
 
-// Load configuration from environment variables
+// Load configuration from environment variables.
 func loadConfig() (*Config, error) {
 	// Initialize logger first
 	logFile := os.Getenv(envLogFile)
-	var logOutput *os.File = os.Stdout
+	var logOutput = os.Stdout
 
 	if logFile != "" {
 		var err error
-		logOutput, err = os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFilePermissions)
+		logOutput, err = os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666) //nolint:gosec,golines // Log files need group write permissions
 		if err != nil {
 			return nil, fmt.Errorf("failed to open log file %s: %w", logFile, err)
 		}
@@ -239,7 +212,8 @@ func loadConfig() (*Config, error) {
 	// Get API token
 	config.TodoistToken = os.Getenv(envTodoistToken)
 	if config.TodoistToken == "" {
-		return nil, fmt.Errorf("loading configuration failed: missing required environment variable %s", envTodoistToken)
+		return nil, fmt.Errorf("loading configuration failed: missing required environment variable %s",
+			envTodoistToken)
 	}
 
 	// Parse dry run flag
@@ -267,7 +241,8 @@ func loadConfig() (*Config, error) {
 	if autoAgeByDefaultStr != "" {
 		config.AutoAgeByDefault, err = strconv.ParseBool(autoAgeByDefaultStr)
 		if err != nil {
-			logger.Printf("Warning: Invalid AUTOAGE_BY_DEFAULT value '%s', defaulting to false: %v", autoAgeByDefaultStr, err)
+			logger.Printf("Warning: Invalid AUTOAGE_BY_DEFAULT value '%s', defaulting to false: %v",
+				autoAgeByDefaultStr, err)
 			config.AutoAgeByDefault = false
 		}
 	}
@@ -325,37 +300,31 @@ func calculateDaysSinceUpdate(lastUpdated, now time.Time, tz *time.Location) int
 		lastUpdatedInTZ.Year(), lastUpdatedInTZ.Month(), lastUpdatedInTZ.Day(),
 		0, 0, 0, 0, tz,
 	)
-	
+
 	nowDay := time.Date(
 		nowInTZ.Year(), nowInTZ.Month(), nowInTZ.Day(),
 		0, 0, 0, 0, tz,
 	)
 
-	// Calculate days difference
-	days := int(nowDay.Sub(lastUpdatedDay).Hours() / hoursPerDay)
-	
-	// Ensure we don't return negative days
-	if days < 0 {
-		days = 0
-	}
-	
-	return days
+	// Calculate days difference and ensure non-negative
+	days := int(nowDay.Sub(lastUpdatedDay).Hours() / 24) //nolint:mnd // hours to days conversion
+	return max(0, days)
 }
 
 // ============================================================================
 // HTTP HELPER FUNCTIONS
 // ============================================================================
 
-// makeAuthenticatedRequest handles common HTTP request setup with authentication
+// makeAuthenticatedRequest handles common HTTP request setup with authentication.
 func makeAuthenticatedRequest(config *Config, method, url string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequestWithContext(context.Background(), method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request for %s %s: %w", method, url, err)
 	}
 
-	req.Header.Add("Authorization", authHeaderPrefix+config.TodoistToken)
+	req.Header.Add("Authorization", "Bearer "+config.TodoistToken)
 	if body != nil {
-		req.Header.Add("Content-Type", contentTypeJSON)
+		req.Header.Add("Content-Type", "application/json")
 	}
 
 	resp, err := httpClient.Do(req)
@@ -366,7 +335,7 @@ func makeAuthenticatedRequest(config *Config, method, url string, body io.Reader
 	return resp, nil
 }
 
-// validateHTTPResponse validates that an HTTP response has a success status code
+// validateHTTPResponse validates that an HTTP response has a success status code.
 func validateHTTPResponse(resp *http.Response) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("API request failed with status %d (%s)", resp.StatusCode, resp.Status)
@@ -374,40 +343,40 @@ func validateHTTPResponse(resp *http.Response) error {
 	return nil
 }
 
-// getTodoistData handles GET requests with JSON decoding
+// getTodoistData handles GET requests with JSON decoding.
 func getTodoistData(config *Config, url string, target any) error {
-	resp, err := makeAuthenticatedRequest(config, httpMethodGet, url, nil)
+	resp, err := makeAuthenticatedRequest(config, "GET", url, nil)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	if err := validateHTTPResponse(resp); err != nil {
-		return err
+	if validateErr := validateHTTPResponse(resp); validateErr != nil {
+		return validateErr
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		return fmt.Errorf("failed to decode JSON response from %s: %w", url, err)
+	if decodeErr := json.NewDecoder(resp.Body).Decode(target); decodeErr != nil {
+		return fmt.Errorf("failed to decode JSON response from %s: %w", url, decodeErr)
 	}
 
 	return nil
 }
 
-// postTodoistData handles POST requests with JSON payload
+// postTodoistData handles POST requests with JSON payload.
 func postTodoistData(config *Config, url string, payload any) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to serialize JSON request payload: %w", err)
 	}
 
-	resp, err := makeAuthenticatedRequest(config, httpMethodPost, url, bytes.NewBuffer(jsonData))
+	resp, err := makeAuthenticatedRequest(config, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	if err := validateHTTPResponse(resp); err != nil {
-		return err
+	if validateErr := validateHTTPResponse(resp); validateErr != nil {
+		return validateErr
 	}
 
 	return nil
@@ -462,10 +431,10 @@ func getDaysSinceCompletion(config *Config, taskID string) (int, error) {
 
 	// Get the most recent completion event
 	latestEvent := activities.Events[0]
-	config.Logger.Printf("Latest completion for task %s: %s", taskID, latestEvent.EventDate.Format(metadataTimeFormat))
+	config.Logger.Printf("Latest completion for task %s: %s", taskID, latestEvent.EventDate.Format(time.RFC3339))
 
 	// Calculate days since completion
-	daysSince := int(time.Since(latestEvent.EventDate).Hours() / hoursPerDay)
+	daysSince := int(time.Since(latestEvent.EventDate).Hours() / 24) //nolint:mnd // hours to days conversion
 	return daysSince, nil
 }
 
@@ -473,7 +442,7 @@ func getDaysSinceCompletion(config *Config, taskID string) (int, error) {
 func getActiveTasks(config *Config) ([]Task, error) {
 	var tasks []Task
 	if err := getTodoistData(config, config.APIURL+apiEndpointTasks, &tasks); err != nil {
-		return nil, fmt.Errorf("Todoist task retrieval failed: %w", err)
+		return nil, fmt.Errorf("todoist task retrieval failed: %w", err)
 	}
 
 	return tasks, nil
@@ -482,8 +451,8 @@ func getActiveTasks(config *Config) ([]Task, error) {
 // updateTask updates a task's content and description in Todoist.
 func updateTask(config *Config, taskID, content, description string) error {
 	data := map[string]string{
-		jsonFieldContent:     content,
-		jsonFieldDescription: description,
+		"content":     content,
+		"description": description,
 	}
 
 	url := fmt.Sprintf(config.APIURL+apiEndpointTask, taskID)
@@ -498,41 +467,46 @@ func updateTask(config *Config, taskID, content, description string) error {
 // BUSINESS LOGIC FUNCTIONS
 // ============================================================================
 
+// processAllTasks orchestrates the main task processing workflow.
 func processAllTasks(config *Config) error {
-	// Get all tasks from Todoist
 	allTasks, err := getActiveTasks(config)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve tasks from Todoist: %w", err)
 	}
 
-	// Filter tasks based on rules
 	tasksToProcess := filterTasksForProcessing(allTasks, config)
-
 	config.Logger.Printf("Found %d tasks to process out of %d total tasks", len(tasksToProcess), len(allTasks))
 
+	return processTaskBatch(config, tasksToProcess)
+}
 
-	// Process each selected task - continue on individual failures
+// processTaskBatch handles batch processing with error collection.
+func processTaskBatch(config *Config, tasks []Task) error {
 	var failures []error
 	successCount := 0
 
-	for _, task := range tasksToProcess {
+	for _, task := range tasks {
 		if err := processTask(config, task); err != nil {
 			config.Logger.Printf("Failed to process task %s (%s): %v", task.ID, task.Content, err)
-			failures = append(failures, fmt.Errorf("task ID %s processing failed: %w", task.ID, err))
+			failures = append(failures, fmt.Errorf("task %s: %w", task.ID, err))
 		} else {
 			successCount++
 		}
 	}
 
+	return reportProcessingResults(config, successCount, len(tasks), failures)
+}
+
+// reportProcessingResults logs results and returns appropriate error.
+func reportProcessingResults(config *Config, successCount, totalCount int, failures []error) error {
 	config.Logger.Printf("Successfully processed %d tasks", successCount)
 
-	if len(failures) > 0 {
-		config.Logger.Printf("Failed to process %d tasks", len(failures))
-		// Return first error but continue processing others
-		return fmt.Errorf("Task processing failed: %d out of %d tasks failed: %w", len(failures), len(tasksToProcess), failures[0])
+	if len(failures) == 0 {
+		return nil
 	}
 
-	return nil
+	config.Logger.Printf("Failed to process %d tasks", len(failures))
+	return fmt.Errorf("task processing failed: %d out of %d tasks failed: %w", len(failures), totalCount, failures[0])
 }
 
 // shouldProcessTask determines if a task should be processed based on auto-aging labels
@@ -542,7 +516,7 @@ func shouldProcessTask(task Task, config *Config) bool {
 	if task.ParentID != nil {
 		return false
 	}
-	
+
 	hasNoAutoAgeLabel := false
 	hasAutoAgeLabel := false
 
@@ -574,13 +548,12 @@ func filterTasksForProcessing(tasks []Task, config *Config) []Task {
 	return tasksToProcess
 }
 
-
 // ============================================================================
 // PARSER/UTILITY FUNCTIONS
 // ============================================================================
 
 // extractTaskAgingInfo extracts the age count from a task's parentheses markers.
-// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}
+// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}.
 // extractMetadataTimestamp extracts the last updated timestamp from task description metadata.
 func extractMetadataTimestamp(description string) time.Time {
 	var lastUpdated time.Time
@@ -588,10 +561,10 @@ func extractMetadataTimestamp(description string) time.Time {
 	// Use pre-compiled regex pattern
 	matches := metadataPattern.FindStringSubmatch(description)
 
-	if len(matches) == 2 {
+	if len(matches) == 2 { //nolint:mnd // 2 groups expected from regex (total + captured group)
 		// Group 1 contains the timestamp string
 		timestampStr := matches[1]
-		parsed, err := time.Parse(metadataTimeFormat, timestampStr)
+		parsed, err := time.Parse(time.RFC3339, timestampStr)
 		if err == nil {
 			lastUpdated = parsed
 		}
@@ -602,7 +575,7 @@ func extractMetadataTimestamp(description string) time.Time {
 
 // updateDescriptionWithMetadata adds or updates the metadata timestamp in a task description.
 func updateDescriptionWithMetadata(description string, lastUpdated time.Time) string {
-	metadataStr := fmt.Sprintf(metadataTemplate, lastUpdated.Format(metadataTimeFormat))
+	metadataStr := fmt.Sprintf(metadataTemplate, lastUpdated.Format(time.RFC3339))
 
 	// If existing metadata found, replace it
 	if metadataPattern.MatchString(description) {
@@ -617,12 +590,12 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 }
 
 // extractTaskAgingInfo extracts the age count from a task's parentheses markers.
-// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}
+// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}.
 func extractTaskAgingInfo(content string) TaskAgeInfo {
 	// Use pre-compiled regex pattern
 	matches := taskAgePattern.FindStringSubmatch(content)
 
-	if len(matches) != 4 {
+	if len(matches) != 4 { //nolint:mnd // 4 groups expected from regex (total + 3 captured groups)
 		return TaskAgeInfo{
 			AgeCount:          0,
 			ContentWithoutAge: content,
@@ -651,12 +624,12 @@ func extractTaskAgingInfo(content string) TaskAgeInfo {
 
 // Update task content with new parentheses count
 // addAgingMarkersToContent adds the specified number of parentheses age markers to task content.
-// Example: addAgingMarkersToContent(" Do something", 4) → "))))) Do something"
+// Example: addAgingMarkersToContent(" Do something", 4) → "))))) Do something".
 func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 	// Find the optional number in the content
 	matches := contentStartRegex.FindStringSubmatch(contentWithoutAge)
 
-	if len(matches) != 3 {
+	if len(matches) != 3 { //nolint:mnd // 3 groups expected from regex (total + 2 captured groups)
 		// If regex fails, just return the original content
 		return contentWithoutAge
 	}
@@ -678,197 +651,123 @@ func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 	return numberPrefix + ageMarkers + remainingContent
 }
 
-// decideUpdateAction determines what action to take on a task based on its current state.
-func decideUpdateAction(currentCount int, ctx TaskContext, lastUpdated time.Time, now time.Time) UpdateAction {
-	// Check for reset conditions first
-	if ctx.IsRecurring && ctx.DaysSinceCompletion >= 0 {
-		// Calculate expected count based on days since completion
-		var expectedCount int
-		if ctx.DaysSinceCompletion == 0 {
-			expectedCount = 0 // Tasks completed today should have no parentheses
-		} else {
-			expectedCount = ctx.DaysSinceCompletion + 1
-		}
-		
-		// Only reset if current count doesn't match expected count
-		if currentCount != expectedCount {
-			return UpdateAction{
-				Action:   actionReset,
-				NewCount: expectedCount,
-			}
-		}
-		
-		// Count matches, no reset needed
-		return UpdateAction{
-			Action:   actionSkip,
-			NewCount: currentCount,
-		}
-	}
-
-	// Check if increment is needed based on midnight rule
-	if !lastUpdated.IsZero() {
-		if !shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
-			return UpdateAction{
-				Action:   actionSkip,
-				NewCount: currentCount,
-			}
-		}
-		
-		// Calculate days since last update to handle cases where the script
-		// didn't run for multiple days
-		daysSinceUpdate := calculateDaysSinceUpdate(lastUpdated, now, ctx.Timezone)
-		
-		// We need at least 1 day to increment
-		if daysSinceUpdate > 0 {
-			return UpdateAction{
-				Action:   actionIncrement,
-				NewCount: currentCount + daysSinceUpdate,
-			}
-		}
-	}
-
-	// Default action is increment by 1 (for cases where lastUpdated is zero)
-	return UpdateAction{
-		Action:   actionIncrement,
-		NewCount: currentCount + 1,
-	}
-}
-
-// handleFirstTimeTask processes tasks that don't have age markers yet
-func handleFirstTimeTask(ctx TaskContext, now time.Time) TaskUpdateInfo {
+// calculateTaskUpdate determines the new content and description for a task based on aging rules.
+func calculateTaskUpdate(ctx TaskContext, now time.Time) TaskUpdateInfo {
+	ageInfo := extractTaskAgingInfo(ctx.Task.Content)
 	lastUpdated := extractMetadataTimestamp(ctx.Task.Description)
-	if lastUpdated.IsZero() {
-		// First time task, add metadata but don't change content
-		nowInTZ := now.In(ctx.Timezone)
-		newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
-		return TaskUpdateInfo{
-			NewContent:     ctx.Task.Content,
-			NewDescription: newDescription,
-			ShouldUpdate:   true,
-		}
-	} else if shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
-		// Task has metadata but no markers yet - add first marker
-		newContent := ") " + ctx.Task.Content
-		nowInTZ := now.In(ctx.Timezone)
-		newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
-		return TaskUpdateInfo{
-			NewContent:     newContent,
-			NewDescription: newDescription,
-			ShouldUpdate:   true,
-		}
-	}
+	nowInTZ := now.In(ctx.Timezone)
 
-	return TaskUpdateInfo{
+	// Start with current state
+	result := TaskUpdateInfo{
 		NewContent:     ctx.Task.Content,
 		NewDescription: ctx.Task.Description,
 		ShouldUpdate:   false,
 	}
-}
 
-// handleExistingTask processes tasks that already have age markers
-func handleExistingTask(ctx TaskContext, ageInfo TaskAgeInfo, now time.Time) TaskUpdateInfo {
-	// Parse existing metadata
-	lastUpdated := extractMetadataTimestamp(ctx.Task.Description)
-
-	// Determine what action to take
-	updateAction := decideUpdateAction(ageInfo.AgeCount, ctx, lastUpdated, now)
-
-	if updateAction.Action == actionSkip {
-		return TaskUpdateInfo{
-			NewContent:     ctx.Task.Content,
-			NewDescription: ctx.Task.Description,
-			ShouldUpdate:   false,
-		}
-	}
-
-	// Special handling for reset action (for recurring tasks)
-	if updateAction.Action == actionReset && ctx.DaysSinceCompletion == 0 {
-		// Complete reset - no parentheses for tasks completed today
-		nowInTZ := now.In(ctx.Timezone)
-		newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
-		return TaskUpdateInfo{
-			NewContent:     strings.TrimSpace(ageInfo.ContentWithoutAge), // Strip leading/trailing spaces
-			NewDescription: newDescription,
-			ShouldUpdate:   true,
-		}
-	}
-
-	// Calculate new content and description
-	newContent := addAgingMarkersToContent(ageInfo.ContentWithoutAge, updateAction.NewCount)
-
-	// Only update if content actually changed
-	if newContent == ctx.Task.Content {
-		return TaskUpdateInfo{
-			NewContent:     ctx.Task.Content,
-			NewDescription: ctx.Task.Description,
-			ShouldUpdate:   false,
-		}
-	}
-
-	// Update metadata with current time
-	nowInTZ := now.In(ctx.Timezone)
+	// Always update description with current timestamp if we're making any change
 	newDescription := updateDescriptionWithMetadata(ctx.Task.Description, nowInTZ)
 
-	return TaskUpdateInfo{
-		NewContent:     newContent,
-		NewDescription: newDescription,
-		ShouldUpdate:   true,
-	}
-}
-
-// calculateTaskUpdate determines the new content and description for a task based on aging rules.
-func calculateTaskUpdate(ctx TaskContext, now time.Time) TaskUpdateInfo {
-	// Extract current parentheses count
-	ageInfo := extractTaskAgingInfo(ctx.Task.Content)
-
-	// For tasks without age markers, we need to check if this is a first-time task
-	// or a task that needs its first marker
-	if !ageInfo.HasAgeMarkers {
-		return handleFirstTimeTask(ctx, now)
+	// Handle first-time tasks (no metadata)
+	if lastUpdated.IsZero() {
+		result.NewDescription = newDescription
+		result.ShouldUpdate = true
+		return result
 	}
 
-	return handleExistingTask(ctx, ageInfo, now)
+	// Check if enough time has passed to make changes
+	if !shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
+		return result // No change needed
+	}
+
+	// Calculate the new age count
+	newCount := calculateNewAgeCount(ageInfo.AgeCount, ctx, lastUpdated, now)
+
+	// Build new content
+	switch {
+	case newCount == 0:
+		result.NewContent = strings.TrimSpace(ageInfo.ContentWithoutAge)
+	case ageInfo.HasAgeMarkers:
+		result.NewContent = addAgingMarkersToContent(ageInfo.ContentWithoutAge, newCount)
+	default:
+		result.NewContent = addAgingMarkersToContent(ctx.Task.Content, newCount)
+	}
+
+	// Only update if content actually changed
+	if result.NewContent != ctx.Task.Content {
+		result.NewDescription = newDescription
+		result.ShouldUpdate = true
+	}
+
+	return result
 }
 
-// logTaskUpdate logs the action being taken on a task
+// calculateNewAgeCount determines the new age count using linear logic.
+func calculateNewAgeCount(currentCount int, ctx TaskContext, lastUpdated time.Time, now time.Time) int {
+	// Handle recurring tasks first - they have special reset logic
+	if ctx.IsRecurring && ctx.DaysSinceCompletion >= 0 {
+		if ctx.DaysSinceCompletion == 0 {
+			return 0 // Tasks completed today get reset to 0
+		}
+		return ctx.DaysSinceCompletion + 1 // Days since completion + 1
+	}
+
+	// Handle regular tasks - increment based on days passed
+	daysSinceUpdate := calculateDaysSinceUpdate(lastUpdated, now, ctx.Timezone)
+	if daysSinceUpdate > 0 {
+		return currentCount + daysSinceUpdate
+	}
+
+	// Default: add first parenthesis for tasks without any
+	if currentCount == 0 {
+		return 1
+	}
+
+	return currentCount
+}
+
+// logTaskUpdate logs the action being taken on a task.
 func logTaskUpdate(config *Config, task Task, ctx TaskContext, updateInfo TaskUpdateInfo) {
-	ageInfoForLog := extractTaskAgingInfo(task.Content)
-	lastUpdatedForLog := extractMetadataTimestamp(task.Description)
-	
-	// Determine the action type for logging
-	var actionType string
-	if !ageInfoForLog.HasAgeMarkers && lastUpdatedForLog.IsZero() {
+	ageInfo := extractTaskAgingInfo(task.Content)
+	lastUpdated := extractMetadataTimestamp(task.Description)
+
+	// Determine action type linearly
+	actionType := "updating task"
+
+	// First-time task
+	if !ageInfo.HasAgeMarkers && lastUpdated.IsZero() {
 		actionType = "first-time processing"
-	} else if !ageInfoForLog.HasAgeMarkers && !lastUpdatedForLog.IsZero() {
+	}
+
+	// Adding first parenthesis
+	if !ageInfo.HasAgeMarkers && !lastUpdated.IsZero() {
 		actionType = "adding first parenthesis"
-	} else {
-		updateAction := decideUpdateAction(ageInfoForLog.AgeCount, ctx, lastUpdatedForLog, time.Now())
-		switch updateAction.Action {
-		case actionReset:
-			if ctx.DaysSinceCompletion >= 0 {
-				actionType = fmt.Sprintf("resetting recurring task (completed %d days ago)", ctx.DaysSinceCompletion)
-			} else {
-				actionType = "resetting task"
-			}
-		case actionIncrement:
-			actionType = "incrementing task"
-		default:
-			actionType = "updating task"
+	}
+
+	// Recurring task reset
+	if ctx.IsRecurring && ctx.DaysSinceCompletion >= 0 {
+		if ctx.DaysSinceCompletion == 0 {
+			actionType = "resetting recurring task (completed today)"
+		} else {
+			actionType = fmt.Sprintf("resetting recurring task (completed %d days ago)", ctx.DaysSinceCompletion)
 		}
 	}
-	
-	// Capitalize first letter of action type for logging
+
+	// Regular increment
+	if !ctx.IsRecurring && ageInfo.HasAgeMarkers {
+		actionType = "incrementing task"
+	}
+
+	// Capitalize first letter
 	if len(actionType) > 0 {
 		actionType = strings.ToUpper(actionType[:1]) + actionType[1:]
 	}
-	
-	config.Logger.Printf("%s %s: \"%s\" -> \"%s\"", 
+
+	config.Logger.Printf("%s %s: \"%s\" -> \"%s\"",
 		actionType, task.ID, task.Content, updateInfo.NewContent)
 }
 
 // processTask processes a single task for aging and updates it if needed.
 func processTask(config *Config, task Task) error {
-
 	// Determine task characteristics
 	isRecurring := isRecurringTask(task)
 	daysSinceCompletion := -1
@@ -903,7 +802,8 @@ func processTask(config *Config, task Task) error {
 
 	// Handle dry run mode
 	if config.DryRun {
-		config.Logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"", task.ID, task.Content, updateInfo.NewContent)
+		config.Logger.Printf("[DRY RUN] Would update task %s: \"%s\" -> \"%s\"",
+			task.ID, task.Content, updateInfo.NewContent)
 		return nil
 	}
 
