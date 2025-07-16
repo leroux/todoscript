@@ -146,6 +146,16 @@ func TestTaskProcessing(t *testing.T) {
 			expectedShouldUpdate: true,
 			description:          "Task with only parentheses should increment normally",
 		},
+		{
+			name:                 "Recurring task completed today but metadata updated today",
+			taskContent:          ")))) Recurring task",
+			taskDescription:      "[auto: lastUpdated=" + now.Format(time.RFC3339) + "]",
+			isRecurring:          true,
+			daysSinceCompletion:  0,
+			expectedContent:      "Recurring task",
+			expectedShouldUpdate: true,
+			description:          "Recurring task completed today should reset even if metadata is recent",
+		},
 	}
 
 	for _, tt := range tests {

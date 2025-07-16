@@ -71,15 +71,16 @@ func loadConfig() (*Config, error) {
 		}
 	}
 
-	// Parse auto age by default flag
+	// Parse auto age by default flag (defaults to true)
+	config.AutoAgeByDefault = true // Default to true
 	autoAgeByDefaultStr := os.Getenv(envAutoAgeDefault)
 	if autoAgeByDefaultStr != "" {
 		var err error
 		config.AutoAgeByDefault, err = strconv.ParseBool(autoAgeByDefaultStr)
 		if err != nil {
-			logger.Printf("Warning: Invalid AUTOAGE_BY_DEFAULT value '%s', defaulting to false: %v",
+			logger.Printf("Warning: Invalid AUTOAGE_BY_DEFAULT value '%s', defaulting to true: %v",
 				autoAgeByDefaultStr, err)
-			config.AutoAgeByDefault = false
+			config.AutoAgeByDefault = true
 		}
 	}
 

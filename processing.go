@@ -91,6 +91,13 @@ func filterTasksForProcessing(tasks []Task, config *Config) []Task {
 	for _, task := range tasks {
 		if shouldProcessTask(task, config) {
 			tasksToProcess = append(tasksToProcess, task)
+			if config.Verbose {
+				config.Logger.Printf("✅ Task %s marked for processing: %s", task.ID, task.Content)
+			}
+		} else {
+			if config.Verbose {
+				config.Logger.Printf("❌ Task %s filtered out: %s", task.ID, task.Content)
+			}
 		}
 	}
 	return tasksToProcess
@@ -119,9 +126,13 @@ func calculateTaskUpdate(ctx TaskContext, now time.Time) TaskUpdateInfo {
 		return result
 	}
 
-	// Check if enough time has passed to make changes
-	if !shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone) {
-		return result // No change needed
+	// Check if enough time has passed to make changes (only for non-recurring tasks)
+	// Recurring tasks use completion-based logic regardless of metadata timing
+	if !ctx.IsRecurring {
+		shouldIncrement := shouldIncrementBasedOnMidnight(lastUpdated, now, ctx.Timezone)
+		if !shouldIncrement {
+			return result // No change needed for non-recurring tasks
+		}
 	}
 
 	// Calculate the new age count
@@ -239,6 +250,11 @@ func processTask(config *Config, task Task) error {
 	}
 
 	updateInfo := calculateTaskUpdate(ctx, now)
+
+	if config.Verbose {
+		config.Logger.Printf("Task %s debug: isRecurring=%v, daysSinceCompletion=%d, shouldUpdate=%v", 
+			task.ID, isRecurring, daysSinceCompletion, updateInfo.ShouldUpdate)
+	}
 
 	if !updateInfo.ShouldUpdate {
 		if config.Verbose {
