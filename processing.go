@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,20 +20,42 @@ func processAllTasks(config *Config) error {
 	return processTaskBatch(config, tasksToProcess)
 }
 
-// processTaskBatch handles batch processing with error collection.
+// processTaskBatch handles batch processing with error collection using concurrent goroutines.
 func processTaskBatch(config *Config, tasks []Task) error {
+	const maxConcurrency = 25
+	
 	var failures []error
+	var failuresMutex sync.Mutex
 	successCount := 0
+	var successMutex sync.Mutex
+	
+	// Create a semaphore to limit concurrent goroutines
+	semaphore := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
 
 	for _, task := range tasks {
-		if err := processTask(config, task); err != nil {
-			config.Logger.Printf("Failed to process task %s (%s): %v", task.ID, task.Content, err)
-			failures = append(failures, fmt.Errorf("task %s: %w", task.ID, err))
-		} else {
-			successCount++
-		}
+		wg.Add(1)
+		go func(t Task) {
+			defer wg.Done()
+			
+			// Acquire semaphore
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			
+			if err := processTask(config, t); err != nil {
+				config.Logger.Printf("Failed to process task %s (%s): %v", t.ID, t.Content, err)
+				failuresMutex.Lock()
+				failures = append(failures, fmt.Errorf("task %s: %w", t.ID, err))
+				failuresMutex.Unlock()
+			} else {
+				successMutex.Lock()
+				successCount++
+				successMutex.Unlock()
+			}
+		}(task)
 	}
 
+	wg.Wait()
 	return reportProcessingResults(config, successCount, len(tasks), failures)
 }
 
@@ -141,7 +164,8 @@ func calculateTaskUpdate(ctx TaskContext, now time.Time) TaskUpdateInfo {
 	// Build new content
 	switch {
 	case newCount == 0:
-		result.NewContent = strings.TrimSpace(ageInfo.ContentWithoutAge)
+		// When resetting, preserve any numbered format (e.g., "1) ") from original content
+		result.NewContent = preserveNumberedFormatOnReset(ctx.Task.Content, ageInfo.ContentWithoutAge)
 	case ageInfo.HasAgeMarkers:
 		result.NewContent = addAgingMarkersToContent(ageInfo.ContentWithoutAge, newCount)
 	default:

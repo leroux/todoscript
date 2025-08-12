@@ -82,7 +82,7 @@ func updateDescriptionWithMetadata(description string, lastUpdated time.Time) st
 }
 
 // extractTaskAgingInfo extracts the age count from a task's parentheses markers.
-// Example: "))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: " Do something", HasAgeMarkers: true}.
+// Example: "1))) Do something" → TaskAgeInfo{AgeCount: 3, ContentWithoutAge: "1 Do something", HasAgeMarkers: true}.
 func extractTaskAgingInfo(content string) TaskAgeInfo {
 	// Use pre-compiled regex pattern
 	matches := taskAgePattern.FindStringSubmatch(content)
@@ -96,19 +96,25 @@ func extractTaskAgingInfo(content string) TaskAgeInfo {
 	}
 
 	// Extract components from regex groups
-	// Group 1: optional number prefix (no longer used)
-	// Group 2: parentheses markers (e.g., ")))" in "))) task")
-	// Group 3: remaining content (e.g., " task" in "))) task")
+	// Group 1: optional number prefix (e.g., "1" in "1))) task")
+	// Group 2: parentheses markers (e.g., ")))" in "1))) task")
+	// Group 3: remaining content (e.g., " task" in "1))) task")
+	numberPrefix := matches[1]
 	ageMarkers := matches[2]
 	remainingContent := matches[3]
 
 	// Count parentheses to get age count
 	ageCount := len(ageMarkers)
 
-	// Preserve spaces in content as expected by tests
+	// Preserve number prefix in ContentWithoutAge if present
+	contentWithoutAge := remainingContent
+	if numberPrefix != "" {
+		contentWithoutAge = numberPrefix + remainingContent
+	}
+
 	return TaskAgeInfo{
 		AgeCount:          ageCount,
-		ContentWithoutAge: remainingContent,
+		ContentWithoutAge: contentWithoutAge,
 		HasAgeMarkers:     true,
 	}
 }
@@ -142,4 +148,30 @@ func addAgingMarkersToContent(contentWithoutAge string, count int) string {
 	}
 
 	return numberPrefix + ageMarkers + remainingContent
+}
+
+// preserveNumberedFormatOnReset formats content for reset scenarios, handling numbered tasks properly.
+// Example: preserveNumberedFormatOnReset("1))))) task", "1 task") -> "1) task"  
+func preserveNumberedFormatOnReset(originalContent, contentWithoutAge string) string {
+	// Check if contentWithoutAge starts with a number (preserved from extractTaskAgingInfo)
+	matches := contentStartRegex.FindStringSubmatch(contentWithoutAge)
+	
+	if len(matches) == 3 { //nolint:mnd // 3 groups expected from regex (total + 2 captured groups)
+		// Group 1: number prefix (e.g., "1" from "1 task")
+		// Group 2: remaining content (e.g., " task" from "1 task")
+		numberPrefix := matches[1]
+		remainingContent := matches[2]
+		
+		if numberPrefix != "" {
+			// Found numbered format - format it properly for reset
+			cleanContent := strings.TrimSpace(remainingContent)
+			if cleanContent != "" {
+				return numberPrefix + ") " + cleanContent
+			}
+			return numberPrefix + ")"
+		}
+	}
+	
+	// No numbered format found, just return trimmed content
+	return strings.TrimSpace(contentWithoutAge)
 }
