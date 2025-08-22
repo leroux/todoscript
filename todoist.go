@@ -112,13 +112,11 @@ func getDaysSinceCompletion(config *Config, taskID string) (int, error) {
 
 	// Check if we have completion events
 	if activities.Count == 0 {
-		config.Logger.Printf("No completion events found for recurring task %s", taskID)
 		return -1, nil
 	}
 
 	// Get the most recent completion event
 	latestEvent := activities.Events[0]
-	config.Logger.Printf("Latest completion for task %s: %s", taskID, latestEvent.EventDate.Format(time.RFC3339))
 
 	// Calculate days since completion
 	daysSince := int(time.Since(latestEvent.EventDate).Hours() / 24) //nolint:mnd // hours to days conversion
