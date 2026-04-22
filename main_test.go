@@ -208,8 +208,7 @@ func TestTaskProcessing(t *testing.T) {
 				t.Errorf("Expected content=%q, got %q", tt.expectedContent, result.NewContent)
 			}
 
-
-			// Verify metadata is updated when ShouldUpdate is true, except for edge cases where 
+			// Verify metadata is updated when ShouldUpdate is true, except for edge cases where
 			// the timestamp might be identical (e.g., recurring task resets with same timestamp)
 			if result.ShouldUpdate && result.NewDescription == task.Description && tt.name != "Recurring task completed today but metadata updated today" {
 				t.Error("Expected description to be updated when ShouldUpdate is true")
@@ -222,17 +221,37 @@ func TestTaskProcessing(t *testing.T) {
 func TestHTTPFunctionality(t *testing.T) {
 	t.Run("GetActiveTasks", func(t *testing.T) {
 		// Mock HTTP server
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			mockTasks := []Task{
-				{
-					ID:      "123",
-					Content: ")) Test task",
-					Labels:  []string{"autoage"},
-				},
+			switch r.URL.Query().Get("cursor") {
+			case "":
+				cursor := "page-2"
+				mockTasks := PaginatedResponse[Task]{
+					Results: []Task{
+						{
+							ID:      "123",
+							Content: ")) Test task",
+							Labels:  []string{"autoage"},
+						},
+					},
+					NextCursor: &cursor,
+				}
+				_ = json.NewEncoder(w).Encode(mockTasks)
+			case "page-2":
+				mockTasks := PaginatedResponse[Task]{
+					Results: []Task{
+						{
+							ID:      "456",
+							Content: ") Another task",
+							Labels:  []string{"autoage"},
+						},
+					},
+				}
+				_ = json.NewEncoder(w).Encode(mockTasks)
+			default:
+				t.Fatalf("unexpected cursor %q", r.URL.Query().Get("cursor"))
 			}
-			_ = json.NewEncoder(w).Encode(mockTasks)
 		}))
 		defer server.Close()
 
@@ -242,8 +261,48 @@ func TestHTTPFunctionality(t *testing.T) {
 		if err != nil {
 			t.Errorf("getActiveTasks() error = %v", err)
 		}
-		if len(tasks) != 1 {
-			t.Errorf("Expected 1 task, got %d", len(tasks))
+		if len(tasks) != 2 {
+			t.Errorf("Expected 2 tasks, got %d", len(tasks))
+		}
+	})
+
+	t.Run("GetDaysSinceCompletion", func(t *testing.T) {
+		completionDate := time.Now().Add(-49 * time.Hour).UTC()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("object_type") != "item" {
+				t.Fatalf("unexpected object_type %q", r.URL.Query().Get("object_type"))
+			}
+			if r.URL.Query().Get("object_id") != "task-123" {
+				t.Fatalf("unexpected object_id %q", r.URL.Query().Get("object_id"))
+			}
+			if r.URL.Query().Get("event_type") != "completed" {
+				t.Fatalf("unexpected event_type %q", r.URL.Query().Get("event_type"))
+			}
+			if r.URL.Query().Get("limit") != "1" {
+				t.Fatalf("unexpected limit %q", r.URL.Query().Get("limit"))
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(ActivityResponse{
+				Results: []ActivityEvent{
+					{
+						EventType: "completed",
+						EventDate: completionDate,
+					},
+				},
+			})
+		}))
+		defer server.Close()
+
+		config := &Config{ActivityURL: server.URL}
+		daysSinceCompletion, err := getDaysSinceCompletion(config, "task-123")
+		if err != nil {
+			t.Fatalf("getDaysSinceCompletion() error = %v", err)
+		}
+		if daysSinceCompletion != 2 {
+			t.Fatalf("Expected 2 days since completion, got %d", daysSinceCompletion)
 		}
 	})
 

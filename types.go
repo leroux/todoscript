@@ -36,8 +36,8 @@ const (
 	labelAutoAge   = "autoage"
 
 	// API URLs.
-	defaultAPIURL      = "https://api.todoist.com/rest/v2"
-	defaultActivityURL = "https://api.todoist.com/sync/v9/activity/get"
+	defaultAPIURL      = "https://api.todoist.com/api/v1"
+	defaultActivityURL = "https://api.todoist.com/api/v1/activities"
 
 	// API endpoints.
 	apiEndpointTasks = "/tasks"
@@ -101,14 +101,20 @@ type TaskContext struct {
 	Timezone            *time.Location
 }
 
-// ActivityResponse represents the response from Todoist's activity API.
-type ActivityResponse struct {
-	Count  int `json:"count"`
-	Events []struct {
-		EventType string    `json:"event_type"`
-		EventDate time.Time `json:"event_date"`
-	} `json:"events"`
+// PaginatedResponse represents Todoist's cursor-based list response shape.
+type PaginatedResponse[T any] struct {
+	Results    []T     `json:"results"`
+	NextCursor *string `json:"next_cursor"`
 }
+
+// ActivityEvent represents a single Todoist activity log event.
+type ActivityEvent struct {
+	EventType string    `json:"event_type"`
+	EventDate time.Time `json:"event_date"`
+}
+
+// ActivityResponse represents the response from Todoist's activity API.
+type ActivityResponse = PaginatedResponse[ActivityEvent]
 
 // Global variables for compiled patterns and HTTP client.
 var (
